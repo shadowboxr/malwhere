@@ -442,6 +442,7 @@ function computeWordBorderPath(word) {
 function Board({ state, dispatch, hoverCell, setHoverCell }) {
   const svgRef = useRef(null);
   const dragPointerRef = useRef(false);
+  const lastTouchTimeRef = useRef(0);
   const { timeouts } = useScheduleRef();
 
   // Cell states derived in one pass
@@ -484,8 +485,17 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
 
   const handlePointerDown = useCallback((e) => {
     if (state.phase !== "playing" || state.activeCard || state.scanning) return;
+    // On mobile, a tap fires both touchstart AND a synthetic mousedown ~300ms later.
+    // Ignore mouse events that follow a recent touch to prevent double-processing.
+    const isTouch = !!e.touches;
+    const now = Date.now();
+    if (isTouch) {
+      lastTouchTimeRef.current = now;
+    } else if (now - lastTouchTimeRef.current < 500) {
+      return;
+    }
     e.preventDefault();
-    const point = e.touches ? e.touches[0] : e;
+    const point = isTouch ? e.touches[0] : e;
     const cell = coordFromPointer(point.clientX, point.clientY);
     if (!cell) return;
     dragPointerRef.current = false;
@@ -566,6 +576,9 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
   const handlePointerUp = useCallback(() => {
     if (!state.isDragging) return;
     dispatch({ type: "END_DRAG" });
+    // Only evaluate as a submission if the user actually dragged across cells.
+    // For a simple tap (no movement), leave the selection in place so the user
+    // can tap additional letters to build the word.
     if (!dragPointerRef.current) return;
     const matched = matchWord(state.selection, state.foundWords);
     if (matched) {
@@ -580,7 +593,7 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
       timeouts.schedule(() => dispatch({ type: "SHAKE", shake: false }), 350);
       dispatch({ type: "CLEAR_SELECTION" });
     } else {
-      dispatch({ type: "CLEAR_SELECTION" });
+      dispatch({ type: "END_DRAG" });
     }
   }, [state.isDragging, state.selection, state.foundWords, dispatch, timeouts]);
 
@@ -607,7 +620,6 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
     let fill = "transparent";
     let textColor = tokens.color.textMuted;
     let pathIdx = entry.pathIdx ?? -1;
-    let popAnim = false;
     let hopAnim = false;
 
     switch (entry.kind) {
@@ -622,13 +634,11 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
       case "flashWord":
         fill = "transparent";
         textColor = tokens.color.white;
-        popAnim = true;
         hopAnim = true;
         break;
       case "flashSpangram":
         fill = "transparent";
         textColor = tokens.color.bg;
-        popAnim = true;
         hopAnim = true;
         break;
       case "selected":
@@ -657,26 +667,33 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
         <rect x={col * CELL} y={row * CELL} width={CELL} height={CELL} fill={fill}
           style={{
             transition: "fill 0.18s ease",
-            animation: popAnim ? "pop 0.32s ease" : entry.kind === "hint" ? "hintPulse 1.5s ease-in-out" : undefined,
+            animation: entry.kind === "hint" ? "hintPulse 1.5s ease-in-out" : undefined,
           }}
         />
-        <foreignObject x={col * CELL} y={row * CELL} width={CELL} height={CELL} style={{ pointerEvents: "none" }}>
-          <div xmlns="http://www.w3.org/1999/xhtml" style={{
-            width: "100%", height: "100%",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontFamily: tokens.font.display,
-            fontWeight: 700,
-            fontSize: "clamp(12px, 3.2vw, 17px)",
-            letterSpacing: "0.02em",
-            color: textColor,
-            transition: "color 0.3s ease",
-            animation: hopAnim
-              ? `letterHop 0.55s ${pathIdx * 0.07}s ${tokens.ease} both`
-              : undefined,
-            willChange: hopAnim ? "transform" : undefined,
-            userSelect: "none",
-          }}>{letter}</div>
-        </foreignObject>
+        <g style={{
+          transformOrigin: `${cx}px ${cy}px`,
+          animation: hopAnim
+            ? `letterHop 0.55s ${pathIdx * 0.07}s ${tokens.ease} both`
+            : undefined,
+        }}>
+          <text
+            x={cx}
+            y={cy}
+            textAnchor="middle"
+            dominantBaseline="central"
+            style={{
+              fontFamily: tokens.font.display,
+              fontWeight: 700,
+              fontSize: 17,
+              letterSpacing: "0.02em",
+              fill: textColor,
+              transition: "fill 0.3s ease",
+              userSelect: "none",
+              WebkitUserSelect: "none",
+              pointerEvents: "none",
+            }}
+          >{letter}</text>
+        </g>
       </g>
     );
   };
@@ -1530,7 +1547,7 @@ const globalStyles = `
   @keyframes obCellIn{from{opacity:0;transform:scale(0.85)}to{opacity:1;transform:scale(1)}}
   @keyframes themeGlow{0%,100%{border-color:rgba(98,38,251,0.2);box-shadow:0 0 8px rgba(98,38,251,0.05)}50%{border-color:rgba(98,38,251,0.5);box-shadow:0 0 16px rgba(98,38,251,0.15)}}
   @keyframes letterIn{from{opacity:0;transform:translateY(3px) scale(0.85)}to{opacity:1;transform:translateY(0) scale(1)}}
-  @keyframes letterHop{0%{transform:translate3d(0,0,0) scale(1)}30%{transform:translate3d(0,-8px,0) scale(1.15)}60%{transform:translate3d(0,0,0) scale(1)}80%{transform:translate3d(0,-2px,0) scale(1.02)}100%{transform:translate3d(0,0,0) scale(1)}}
+  @keyframes letterHop{0%{transform:translateY(0) scale(1)}30%{transform:translateY(-8px) scale(1.15)}60%{transform:translateY(0) scale(1)}80%{transform:translateY(-2px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
   @keyframes notHereIn{from{opacity:0}to{opacity:1}}
   @keyframes wordFillIn{from{opacity:0}to{opacity:1}}
   @keyframes wordBorderIn{from{opacity:0}to{opacity:1}}
