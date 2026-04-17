@@ -952,7 +952,7 @@ function LoadingOverlay({ onComplete }) {
 function Onboarding({ onClose }) {
   const [step, setStep] = useState(0);
   const slides = [
-    { title: "How to play", sub: "Find hidden attack terms",
+    { title: "How to play", sub: "Find hidden supply chain attacks",
       pts: ["Drag or tap letters to form words", "Words can snake in any direction", "Every letter is used exactly once", "Stuck? Tap \u201CScan\u201D to reveal a word"],
       demo: "grid" },
     { title: "Find the Missing Link", sub: null,
@@ -1030,7 +1030,7 @@ function Onboarding({ onClose }) {
             <div style={{
               fontFamily: tokens.font.body, fontWeight: 400, fontSize: 12,
               color: tokens.color.textFaint, marginTop: 16, letterSpacing: "-0.01em",
-            }}>Find the hidden attack patterns.</div>
+            }}>Find the relevant open source projects</div>
           </div>
         ) : (
           <>
