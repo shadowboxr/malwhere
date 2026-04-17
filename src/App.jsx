@@ -1,4 +1,4 @@
-import React, {
+import {
   useState as k,
   useRef as Y,
   useCallback as C,
@@ -1100,7 +1100,7 @@ function oe({ onPlayAgain: c }) {
             width: "100%",
             maxWidth: 360,
             height: 200,
-            margin: "0 auto 24px",
+            margin: "0 auto 8px",
             display: lottieFailed ? "none" : "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -1113,7 +1113,7 @@ function oe({ onPlayAgain: c }) {
             width: "100%",
             maxWidth: 360,
             height: "auto",
-            margin: "0 auto 24px",
+            margin: "0 auto 8px",
             display: "block",
           },
         }),
@@ -1130,7 +1130,7 @@ function oe({ onPlayAgain: c }) {
               lineHeight: 1.6,
               color: e.textMuted,
               maxWidth: 480,
-              margin: "0 auto 36px",
+              margin: "0 auto 24px",
               letterSpacing: "-0.01em",
             },
           },
@@ -1939,7 +1939,7 @@ function se({ onClose: c }) {
     React.createElement(GameFooter, null),
   );
 }
-export default function le() {
+export default function App() {
   const [loading, setLoading] = k(!0),
     [c, n] = k(!0),
     [d, y] = k([]),
@@ -2345,31 +2345,6 @@ export default function le() {
           position: "relative",
         },
       },
-      !loading && React.createElement(
-        "button",
-        {
-          onClick: () => M(!0),
-          style: {
-            position: "fixed",
-            bottom: 12,
-            right: 12,
-            zIndex: 50,
-            background: e.accent,
-            color: e.white,
-            border: "none",
-            borderRadius: 0,
-            padding: "6px 10px",
-            fontFamily: p.mono,
-            fontSize: 10,
-            fontWeight: 600,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            cursor: "pointer",
-            opacity: 0.6,
-          },
-        },
-        "Skip \u2192 End",
-      ),
       !loading && React.createElement(
         "header",
         { style: { padding: "16px 16px 0", position: "relative", zIndex: 1 } },
