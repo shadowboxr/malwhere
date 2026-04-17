@@ -1004,8 +1004,8 @@ function ae({ word: c, onClose: n }) {
 // FINAL SCREEN ANIMATION
 // Drop your Lottie JSON URL below. Leave empty to use image fallback.
 // Example: "https://raw.githubusercontent.com/USER/REPO/main/final.json"
-const FINAL_LOTTIE_URL = "public/final-malwhere.json";
-const FINAL_FALLBACK_IMAGE = "public/Not here.png";
+const FINAL_LOTTIE_URL = "/final-malwhere.json";
+const FINAL_FALLBACK_IMAGE = "/Not here.png";
 // ============================================================
 
 function oe({ onPlayAgain: c }) {
