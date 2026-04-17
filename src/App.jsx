@@ -37,31 +37,31 @@ const e = {
   $ = 8,
   D = 8,
   ne = [
-    ["S", "O", "L", "A", "R", "S", "H", "A"],
-    ["S", "D", "N", "I", "W", "U", "H", "I"],
-    ["T", "R", "I", "V", "Y", "L", "U", "D"],
-    ["U", "P", "P", "L", "Y", "C", "H", "A"],
-    ["S", "L", "I", "T", "E", "T", "E", "I"],
-    ["A", "X", "M", "L", "L", "N", "L", "N"],
-    ["O", "I", "D", "E", "B", "Y", "X", "D"],
-    ["S", "I", "S", "G", "U", "X", "D", "Y"],
+    ["S", "U", "P", "P", "L", "Y", "C", "H"],
+    ["R", "A", "L", "O", "S", "N", "I", "A"],
+    ["W", "I", "N", "D", "S", "S", "H", "A"],
+    ["R", "T", "D", "U", "L", "U", "H", "I"],
+    ["I", "V", "Y", "L", "I", "T", "E", "L"],
+    ["X", "Y", "N", "L", "E", "T", "M", "L"],
+    ["D", "E", "B", "U", "G", "D", "Y", "D"],
+    ["S", "O", "I", "X", "A", "S", "I", "X"],
   ],
   L = [
     {
       name: "SUPPLYCHAI",
       display: "Supply Chain",
       path: [
-        [4, 0],
-        [3, 0],
-        [3, 1],
-        [3, 2],
-        [3, 3],
-        [3, 4],
-        [3, 5],
-        [3, 6],
-        [3, 7],
-        [4, 7],
-        [5, 7],
+        [0, 0],
+        [0, 1],
+        [0, 2],
+        [0, 3],
+        [0, 4],
+        [0, 5],
+        [0, 6],
+        [0, 7],
+        [1, 7],
+        [1, 6],
+        [1, 5],
       ],
       isSpangram: !0,
       card: {
@@ -80,16 +80,16 @@ const e = {
       name: "SOLARWINDS",
       display: "SolarWinds",
       path: [
-        [0, 0],
-        [0, 1],
-        [0, 2],
-        [0, 3],
-        [0, 4],
         [1, 4],
         [1, 3],
         [1, 2],
         [1, 1],
         [1, 0],
+        [2, 0],
+        [2, 1],
+        [2, 2],
+        [2, 3],
+        [2, 4],
       ],
       isSpangram: !1,
       card: {
@@ -108,15 +108,15 @@ const e = {
       name: "SHAIHULUD",
       display: "Shai-Hulud",
       path: [
-        [0, 5],
-        [0, 6],
-        [0, 7],
-        [1, 7],
-        [1, 6],
-        [1, 5],
         [2, 5],
         [2, 6],
         [2, 7],
+        [3, 7],
+        [3, 6],
+        [3, 5],
+        [3, 4],
+        [3, 3],
+        [3, 2],
       ],
       isSpangram: !1,
       card: {
@@ -135,17 +135,17 @@ const e = {
       name: "TRIVY",
       display: "Trivy",
       path: [
-        [2, 0],
-        [2, 1],
-        [2, 2],
-        [2, 3],
-        [2, 4],
+        [3, 1],
+        [3, 0],
+        [4, 0],
+        [4, 1],
+        [4, 2],
       ],
       isSpangram: !1,
       card: {
         title: "Trivy",
         date: "Mar 20, 2026",
-        artifact: "GitHub Action and container image",
+        artifact: "GitHub Actions and container image",
         vector:
           "83 versions of trivy-action and setup-trivy GitHub Actions hijacked to point to malicious commits after Trivy\u2019s GitHub credentials were compromised; poisoned Trivy container image also released",
         impact:
@@ -158,7 +158,7 @@ const e = {
       name: "LITELLM",
       display: "LiteLLM",
       path: [
-        [4, 1], [4, 2], [4, 3], [4, 4], [5, 4], [5, 3], [5, 2],
+        [4, 3], [4, 4], [4, 5], [4, 6], [4, 7], [5, 7], [5, 6],
       ],
       isSpangram: !1,
       card: {
@@ -176,7 +176,7 @@ const e = {
       name: "TELNYX",
       display: "Telnyx",
       path: [
-        [4, 5], [4, 6], [5, 6], [5, 5], [6, 5], [6, 6],
+        [5, 5], [5, 4], [5, 3], [5, 2], [5, 1], [5, 0],
       ],
       isSpangram: !1,
       card: {
@@ -194,10 +194,10 @@ const e = {
       name: "AXIOS",
       display: "Axios",
       path: [
-        [5, 0],
-        [5, 1],
-        [6, 1],
-        [6, 0],
+        [7, 4],
+        [7, 3],
+        [7, 2],
+        [7, 1],
         [7, 0],
       ],
       isSpangram: !1,
@@ -216,11 +216,11 @@ const e = {
       name: "DEBUG",
       display: "debug",
       path: [
+        [6, 0],
+        [6, 1],
         [6, 2],
         [6, 3],
         [6, 4],
-        [7, 4],
-        [7, 3],
       ],
       isSpangram: !1,
       card: {
@@ -239,7 +239,7 @@ const e = {
       name: "DYDX",
       display: "dYdX",
       path: [
-        [6, 7], [7, 7], [7, 6], [7, 5],
+        [6, 5], [6, 6], [6, 7], [7, 7],
       ],
       isSpangram: !1,
       card: {
@@ -258,8 +258,8 @@ const e = {
       name: "IS",
       display: "is",
       path: [
-        [7, 1],
-        [7, 2],
+        [7, 6],
+        [7, 5],
       ],
       isSpangram: !1,
       card: {
@@ -589,7 +589,7 @@ function ae({ word: c, onClose: n }) {
                 marginBottom: 10,
               },
             },
-            "The problem isn\u2019t one attack. It\u2019s the chain.",
+            "Your security is only as strong as its weakest dependency.",
           ),
           React.createElement(
             "div",
@@ -603,7 +603,7 @@ function ae({ word: c, onClose: n }) {
                 letterSpacing: "-0.01em",
               },
             },
-            "Attackers don\u2019t break in. They build in. Compromised packages, poisoned pipelines, and trusted dependencies turn software delivery into an attack surface.",
+            "Just because an open source library has millions of downloads, thousands of GitHub stars, and hundreds of previously safe versions doesn\u2019t make it safe.",
           ),
         ),
         React.createElement(
@@ -627,7 +627,7 @@ function ae({ word: c, onClose: n }) {
                 marginBottom: 10,
               },
             },
-            "Security breaks when trust is assumed.",
+            "Strong security means having verified trust.",
           ),
           React.createElement(
             "div",
@@ -641,7 +641,7 @@ function ae({ word: c, onClose: n }) {
                 letterSpacing: "-0.01em",
               },
             },
-            "Every dependency expands the blast radius. Every build step is a potential entry point. Left unchecked, the chain becomes the vulnerability.",
+            "Open source is critical to how we all build, and it\u2019s essential to verify that what package you\u2019re consuming matches the expected source code bit-for-bit. Otherwise, you run the risk of introducing something malicious into your builds.",
           ),
         ),
         React.createElement(
@@ -684,7 +684,7 @@ function ae({ word: c, onClose: n }) {
                 marginBottom: 10,
               },
             },
-            "Chainguard breaks the chain.",
+            "Chainguard proactively defends against the next supply chain attack.",
           ),
           React.createElement(
             "div",
@@ -698,21 +698,7 @@ function ae({ word: c, onClose: n }) {
                 letterSpacing: "-0.01em",
               },
             },
-            "No hidden dependencies. No inherited risk. No malware.",
-          ),
-          React.createElement(
-            "div",
-            {
-              style: {
-                fontFamily: p.mono,
-                fontWeight: 400,
-                fontSize: 10,
-                color: e.textMuted,
-                marginTop: 12,
-                letterSpacing: "-0.01em",
-              },
-            },
-            "The trusted source for open source.",
+            "With every dependency built from source in an isolated environment, Chainguard Libraries act as the trust layer for your open source so you can build safely with AI",
           ),
         ),
         React.createElement(
@@ -1981,7 +1967,7 @@ export default function App() {
           const i = L.find((a) => a.name === s);
           i &&
             i.path.forEach(([a, g]) => {
-              t[T(a, g)] = { type: i.isSpangram ? "sp" : "fd", wordIdx: idx };
+              t[T(a, g)] = { type: i.isSpangram ? "sp" : "fd", wordIdx: idx, wordName: s };
             });
         }),
         t
@@ -2223,7 +2209,7 @@ export default function App() {
         return { state: v.sp ? "fsp" : "ffd", wordIdx: -1 };
       const cellData = j[i];
       if (cellData)
-        return { state: cellData.type, wordIdx: cellData.wordIdx };
+        return { state: cellData.type, wordIdx: cellData.wordIdx, wordName: cellData.wordName };
       if (J.has(i))
         return { state: "sel", wordIdx: -1 };
       if (hintCells.has(i))
@@ -2233,7 +2219,18 @@ export default function App() {
       return { state: "def", wordIdx: -1 };
     },
     fdShades = ["#5520D9", "#6226FB", "#7B4AFD"],
-    ee = (t, wordIdx) => {
+    fdShadeMap = {
+      SOLARWINDS: 0,
+      SHAIHULUD: 1,
+      TRIVY: 2,
+      LITELLM: 0,
+      TELNYX: 1,
+      DYDX: 1,
+      IS: 0,
+      DEBUG: 2,
+      AXIOS: 0,
+    },
+    ee = (t, wordIdx, wordName) => {
       switch (t) {
         case "def":
           return {
@@ -2257,7 +2254,8 @@ export default function App() {
             co: e.text,
           };
         case "fd": {
-          const shade = fdShades[wordIdx % 3];
+          const shadeIdx = fdShadeMap[wordName] ?? (wordIdx % 3);
+          const shade = fdShades[shadeIdx];
           return {
             bg: shade,
             bd: "1px solid transparent",
@@ -2549,7 +2547,8 @@ export default function App() {
               const cellInfo = _(s, a),
                 g = cellInfo.state,
                 wi = cellInfo.wordIdx,
-                m = ee(g, wi),
+                wn = cellInfo.wordName,
+                m = ee(g, wi, wn),
                 I = g === "ffd" || g === "fsp";
               const isHint = g === "hint";
               return React.createElement(
