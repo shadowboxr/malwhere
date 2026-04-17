@@ -1005,7 +1005,7 @@ function ae({ word: c, onClose: n }) {
 // Drop your Lottie JSON URL below. Leave empty to use image fallback.
 // Example: "https://raw.githubusercontent.com/USER/REPO/main/final.json"
 const FINAL_LOTTIE_URL = "";
-const FINAL_FALLBACK_IMAGE = "https://i.ibb.co/QjXQ3Vn/malwhere-not-here.png";
+const FINAL_FALLBACK_IMAGE = "public/Not here.png";
 // ============================================================
 
 function oe({ onPlayAgain: c }) {
