@@ -817,20 +817,27 @@ function useScheduleRef() {
 // ============================================================================
 // WORD PILLS
 // ============================================================================
-function WordPill({ word, found }) {
+function WordPill({ word, found, onClick }) {
   const isSpangram = word.isSpangram;
   const bg = found ? (isSpangram ? tokens.color.spangram : tokens.color.accent) : "rgba(255,255,255,0.06)";
   const color = found ? (isSpangram ? tokens.color.spangram : tokens.color.accentText) : tokens.color.textFaint;
   const border = found ? (isSpangram ? tokens.color.spangram : `${tokens.color.accent}88`) : tokens.color.borderSubtle;
   const bgSoft = found ? (isSpangram ? tokens.color.spangramSoft : tokens.color.accentSoft) : "transparent";
+  const clickable = found && !!onClick;
   return (
-    <div style={{
-      display: "inline-flex", alignItems: "center", gap: 5,
-      padding: "5px 10px", borderRadius: 0,
-      border: `1.5px solid ${border}`, background: bgSoft,
-      opacity: found ? 1 : 0.25,
-      transition: `all 0.4s ${tokens.ease}`,
-    }}>
+    <button
+      onClick={clickable ? onClick : undefined}
+      disabled={!clickable}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 5,
+        padding: "5px 10px", borderRadius: 0,
+        border: `1.5px solid ${border}`, background: bgSoft,
+        opacity: found ? 1 : 0.25,
+        transition: `all 0.4s ${tokens.ease}`,
+        cursor: clickable ? "pointer" : "default",
+        font: "inherit",
+      }}
+    >
       <span style={{
         width: 4, height: 4, borderRadius: "50%", background: bg, flexShrink: 0,
         transition: "background 0.3s",
@@ -840,7 +847,7 @@ function WordPill({ word, found }) {
         letterSpacing: "0.05em", textTransform: "uppercase", color,
         transition: "color 0.3s",
       }}>{found ? word.display : "•••"}</span>
-    </div>
+    </button>
   );
 }
 
@@ -1717,7 +1724,12 @@ export default function App() {
               justifyContent: "center", marginTop: 10,
             }}>
               {WORDS.map((w) => (
-                <WordPill key={w.id} word={w} found={state.foundWords.includes(w.id)} />
+                <WordPill
+                  key={w.id}
+                  word={w}
+                  found={state.foundWords.includes(w.id)}
+                  onClick={() => dispatch({ type: "OPEN_CARD", word: w })}
+                />
               ))}
             </div>
           </div>
