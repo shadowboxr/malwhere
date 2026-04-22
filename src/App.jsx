@@ -1756,7 +1756,7 @@ function AttackCard({ word, onClose }) {
             <span style={{
               fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
               letterSpacing: "0.14em", textTransform: "uppercase", color: accent,
-            }}>MISSING LINK</span>
+            }}>ATTACK FOUND</span>
             <div style={{ flex: 1 }} />
             <span style={{
               fontFamily: tokens.font.mono, fontWeight: 400, fontSize: 10,
