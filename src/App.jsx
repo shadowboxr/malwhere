@@ -956,12 +956,516 @@ function LoadingOverlay({ onComplete }) {
 // ============================================================================
 // ONBOARDING
 // ============================================================================
+function InteractiveDemo({ stepKey }) {
+  // 3-row × 4-col grid: B U G X / I O D E / L C A P
+  // CODE path: C(2,1) -> O(1,1) -> D(1,2) -> E(1,3)
+  const GRID = [["B","U","G","X"],["I","O","D","E"],["L","C","A","P"]];
+  const TARGET_PATH = [[2,1],[1,1],[1,2],[1,3]];
+  const TARGET_KEYS = useMemo(() => new Set(TARGET_PATH.map(([r, c]) => `${r},${c}`)), []);
+  const CELL_SIZE = 50;
+  const GRID_W = 4 * CELL_SIZE;
+  const GRID_H = 3 * CELL_SIZE;
+
+  const [selectedPath, setSelectedPath] = useState([]);
+  const [hoverCell, setHoverCell] = useState(null);
+  const [cursorPos, setCursorPos] = useState({ x: 0, y: 0, visible: false });
+  const [cursorPressed, setCursorPressed] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [gestureLabel, setGestureLabel] = useState(""); // "TAP" or "DRAG"
+  const [userInteracted, setUserInteracted] = useState(false);
+  const [isDraggingUser, setIsDraggingUser] = useState(false);
+  const [solved, setSolved] = useState(false);
+  const [hopTrigger, setHopTrigger] = useState(0);
+  const timersRef = useRef([]);
+  const svgRef = useRef(null);
+
+  const cellCenter = useCallback((row, col) => ({
+    x: col * CELL_SIZE + CELL_SIZE / 2,
+    y: row * CELL_SIZE + CELL_SIZE / 2,
+  }), []);
+
+  const clearTimers = useCallback(() => {
+    timersRef.current.forEach(clearTimeout);
+    timersRef.current = [];
+  }, []);
+
+  const runDemo = useCallback(() => {
+    clearTimers();
+    setSelectedPath([]);
+    setHoverCell(null);
+    setCursorPressed(false);
+    setIsDragging(false);
+    setGestureLabel("");
+
+    const c = cellCenter(TARGET_PATH[0][0], TARGET_PATH[0][1]); // C at (2,1)
+    const o = cellCenter(TARGET_PATH[1][0], TARGET_PATH[1][1]); // O at (1,1)
+
+    setCursorPos({ x: c.x - 50, y: c.y + 50, visible: false });
+
+    // --- TAP DEMO ---
+    timersRef.current.push(setTimeout(() => {
+      setGestureLabel("TAP");
+      setCursorPos({ x: c.x - 50, y: c.y + 50, visible: true });
+    }, 300));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: c.x, y: c.y, visible: true });
+    }, 600));
+
+    timersRef.current.push(setTimeout(() => {
+      setHoverCell(`${TARGET_PATH[0][0]},${TARGET_PATH[0][1]}`);
+    }, 950));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(true);
+    }, 1250));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(false);
+      setSelectedPath([TARGET_PATH[0]]);
+      setHoverCell(null);
+    }, 1500));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: o.x, y: o.y, visible: true });
+    }, 1950));
+
+    timersRef.current.push(setTimeout(() => {
+      setHoverCell(`${TARGET_PATH[1][0]},${TARGET_PATH[1][1]}`);
+    }, 2300));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(true);
+    }, 2600));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(false);
+      setSelectedPath([TARGET_PATH[0], TARGET_PATH[1]]);
+      setHoverCell(null);
+    }, 2850));
+
+    timersRef.current.push(setTimeout(() => {
+      setSelectedPath([]);
+      setCursorPos((p) => ({ ...p, visible: false }));
+      setGestureLabel("");
+    }, 3700));
+
+    // --- DRAG DEMO ---
+    timersRef.current.push(setTimeout(() => {
+      setGestureLabel("DRAG");
+      setCursorPos({ x: c.x - 50, y: c.y + 50, visible: true });
+    }, 4100));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: c.x, y: c.y, visible: true });
+    }, 4400));
+
+    timersRef.current.push(setTimeout(() => {
+      setHoverCell(`${TARGET_PATH[0][0]},${TARGET_PATH[0][1]}`);
+    }, 4750));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(true);
+      setIsDragging(true);
+      setSelectedPath([TARGET_PATH[0]]);
+      setHoverCell(null);
+    }, 5050));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: o.x, y: o.y, visible: true });
+    }, 5400));
+
+    timersRef.current.push(setTimeout(() => {
+      setSelectedPath([TARGET_PATH[0], TARGET_PATH[1]]);
+    }, 5750));
+
+    timersRef.current.push(setTimeout(() => {
+      setCursorPressed(false);
+      setIsDragging(false);
+    }, 6200));
+
+    timersRef.current.push(setTimeout(() => {
+      setSelectedPath([]);
+      setHoverCell(null);
+      setCursorPos((p) => ({ ...p, visible: false }));
+      setGestureLabel("");
+    }, 7000));
+
+    // Longer gap — gives user time to try it themselves before loop restarts
+    timersRef.current.push(setTimeout(() => {
+      runDemo();
+    }, 10500));
+  }, [cellCenter, clearTimers]);
+
+  useEffect(() => {
+    if (userInteracted) return;
+    runDemo();
+    return clearTimers;
+  }, [stepKey, userInteracted, runDemo, clearTimers]);
+
+  const coordFromPointer = useCallback((clientX, clientY) => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    const col = Math.floor(((clientX - rect.left) / rect.width) * 4);
+    const row = Math.floor(((clientY - rect.top) / rect.height) * 3);
+    if (row < 0 || row >= 3 || col < 0 || col >= 4) return null;
+    return [row, col];
+  }, []);
+
+  const takeOver = useCallback(() => {
+    if (userInteracted) return;
+    clearTimers();
+    setUserInteracted(true);
+    setCursorPos((p) => ({ ...p, visible: false }));
+    setGestureLabel("");
+    setSelectedPath([]);
+    setHoverCell(null);
+  }, [userInteracted, clearTimers]);
+
+  // Check if selection forms CODE (forward or reversed)
+  const checkSolved = useCallback((path) => {
+    if (path.length !== TARGET_PATH.length) return false;
+    const fwd = path.map(([r, c]) => `${r},${c}`).join("|");
+    const targetFwd = TARGET_PATH.map(([r, c]) => `${r},${c}`).join("|");
+    const targetRev = [...TARGET_PATH].reverse().map(([r, c]) => `${r},${c}`).join("|");
+    return fwd === targetFwd || fwd === targetRev;
+  }, []);
+
+  const triggerSolve = useCallback(() => {
+    setSolved(true);
+    setHopTrigger((h) => h + 1);
+  }, []);
+
+  const resetUserDemo = useCallback(() => {
+    setSolved(false);
+    setSelectedPath([]);
+    setHoverCell(null);
+  }, []);
+
+  const handlePointerDown = useCallback((e) => {
+    e.preventDefault();
+    takeOver();
+    if (solved) {
+      resetUserDemo();
+      return;
+    }
+    const point = e.touches ? e.touches[0] : e;
+    const cell = coordFromPointer(point.clientX, point.clientY);
+    if (!cell) return;
+    setIsDraggingUser(true);
+    setSelectedPath((prev) => {
+      if (prev.length === 0) return [cell];
+      const last = prev[prev.length - 1];
+      if (last[0] === cell[0] && last[1] === cell[1]) {
+        // Tapping last cell — submit if it matches CODE
+        if (checkSolved(prev)) {
+          setTimeout(() => triggerSolve(), 50);
+        }
+        return prev;
+      }
+      const existingIdx = prev.findIndex(([r, c]) => r === cell[0] && c === cell[1]);
+      if (existingIdx >= 0) return prev.slice(0, existingIdx + 1);
+      if (isAdjacent(last, cell)) {
+        const next = [...prev, cell];
+        if (checkSolved(next)) setTimeout(() => triggerSolve(), 50);
+        return next;
+      }
+      return [cell];
+    });
+  }, [takeOver, solved, resetUserDemo, coordFromPointer, checkSolved, triggerSolve]);
+
+  const handlePointerMove = useCallback((e) => {
+    if (!isDraggingUser || solved) return;
+    e.preventDefault();
+    const point = e.touches ? e.touches[0] : e;
+    const cell = coordFromPointer(point.clientX, point.clientY);
+    if (!cell) return;
+    setSelectedPath((prev) => {
+      if (prev.length === 0) return [cell];
+      const last = prev[prev.length - 1];
+      if (last[0] === cell[0] && last[1] === cell[1]) return prev;
+      if (prev.length >= 2) {
+        const prev2 = prev[prev.length - 2];
+        if (prev2[0] === cell[0] && prev2[1] === cell[1]) return prev.slice(0, -1);
+      }
+      if (prev.some(([r, c]) => r === cell[0] && c === cell[1])) return prev;
+      if (!isAdjacent(last, cell)) return prev;
+      const next = [...prev, cell];
+      if (checkSolved(next)) setTimeout(() => triggerSolve(), 50);
+      return next;
+    });
+  }, [isDraggingUser, solved, coordFromPointer, checkSolved, triggerSolve]);
+
+  const handlePointerUp = useCallback(() => {
+    setIsDraggingUser(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isDraggingUser) return;
+    window.addEventListener("mouseup", handlePointerUp);
+    window.addEventListener("touchend", handlePointerUp);
+    return () => {
+      window.removeEventListener("mouseup", handlePointerUp);
+      window.removeEventListener("touchend", handlePointerUp);
+    };
+  }, [isDraggingUser, handlePointerUp]);
+
+  const pathString = useMemo(() => {
+    if (selectedPath.length < 2) return "";
+    return selectedPath.map(([r, c]) => {
+      const p = cellCenter(r, c);
+      return `${p.x},${p.y}`;
+    }).join(" ");
+  }, [selectedPath, cellCenter]);
+
+  const selectedSet = useMemo(() => {
+    const s = new Set();
+    selectedPath.forEach(([r, c]) => s.add(`${r},${c}`));
+    return s;
+  }, [selectedPath]);
+
+  const selectionFillPath = useMemo(() => {
+    if (selectedPath.length === 0) return "";
+    // Build unified perimeter path around the whole word — matches main app approach
+    const cellSet = new Set(selectedPath.map(([r, c]) => `${r},${c}`));
+    const edges = [];
+    for (const [r, c] of selectedPath) {
+      const x1 = c * CELL_SIZE, y1 = r * CELL_SIZE;
+      const x2 = (c + 1) * CELL_SIZE, y2 = (r + 1) * CELL_SIZE;
+      if (!cellSet.has(`${r - 1},${c}`)) edges.push([x1, y1, x2, y1]);
+      if (!cellSet.has(`${r},${c + 1}`)) edges.push([x2, y1, x2, y2]);
+      if (!cellSet.has(`${r + 1},${c}`)) edges.push([x2, y2, x1, y2]);
+      if (!cellSet.has(`${r},${c - 1}`)) edges.push([x1, y2, x1, y1]);
+    }
+    const paths = [];
+    const used = new Set();
+    for (let i = 0; i < edges.length; i++) {
+      if (used.has(i)) continue;
+      const loop = [edges[i]];
+      used.add(i);
+      while (true) {
+        const last = loop[loop.length - 1];
+        const endX = last[2], endY = last[3];
+        let found = -1;
+        for (let j = 0; j < edges.length; j++) {
+          if (used.has(j)) continue;
+          if (edges[j][0] === endX && edges[j][1] === endY) { found = j; break; }
+        }
+        if (found === -1) break;
+        loop.push(edges[found]);
+        used.add(found);
+      }
+      if (loop.length) {
+        const points = [[loop[0][0], loop[0][1]]];
+        for (const [, , x2, y2] of loop) points.push([x2, y2]);
+        const simplified = [points[0]];
+        for (let k = 1; k < points.length - 1; k++) {
+          const [px, py] = simplified[simplified.length - 1];
+          const [cx, cy] = points[k];
+          const [nx, ny] = points[k + 1];
+          if ((cx - px) * (ny - cy) - (cy - py) * (nx - cx) !== 0) simplified.push(points[k]);
+        }
+        let d = `M${simplified[0][0]} ${simplified[0][1]}`;
+        for (let k = 1; k < simplified.length; k++) d += `L${simplified[k][0]} ${simplified[k][1]}`;
+        d += "Z";
+        paths.push(d);
+      }
+    }
+    return paths.join(" ");
+  }, [selectedPath]);
+
+  const accentColor = tokens.color.spangram; // green for CODE demo
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14, width: "100%" }}>
+      {/* Prominent instruction */}
+      <div style={{
+        fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
+        letterSpacing: "-0.01em", color: tokens.color.white, textAlign: "center",
+        display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", justifyContent: "center",
+      }}>
+        Try it, find the word
+        <span style={{
+          fontFamily: tokens.font.mono, fontWeight: 600, fontSize: 12,
+          color: accentColor, letterSpacing: "0.08em",
+          padding: "2px 8px", background: tokens.color.spangramSoft,
+          border: `1px solid ${accentColor}44`,
+        }}>CODE</span>
+      </div>
+
+      {/* Gesture label / solved message */}
+      <div style={{
+        height: 14,
+        fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
+        letterSpacing: "0.14em", textTransform: "uppercase",
+        color: accentColor,
+        opacity: (gestureLabel || solved) ? 1 : 0,
+        transition: "opacity 0.25s ease",
+      }}>{solved ? "Solved — tap to try again" : (gestureLabel || "\u00A0")}</div>
+
+      {/* Grid */}
+      <div style={{ position: "relative", padding: "8px 40px 12px" }}>
+        <svg
+          ref={svgRef}
+          width={GRID_W} height={GRID_H}
+          viewBox={`0 0 ${GRID_W} ${GRID_H}`}
+          style={{ display: "block", touchAction: "none", userSelect: "none", cursor: "pointer", overflow: "visible" }}
+          onMouseDown={handlePointerDown}
+          onMouseMove={handlePointerMove}
+          onTouchStart={handlePointerDown}
+          onTouchMove={handlePointerMove}
+          onMouseEnter={takeOver}
+        >
+          {/* Solved state — unified fill like main app */}
+          {solved && (
+            <path
+              d={selectionFillPath}
+              fill={tokens.color.accent}
+              stroke="rgba(0,0,0,0.45)"
+              strokeWidth={2.5}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          )}
+
+          {/* In-progress selection fill (soft) */}
+          {!solved && selectionFillPath && (
+            <path d={selectionFillPath} fill="rgba(98,38,251,0.08)" />
+          )}
+
+          {/* Dashed outline on in-progress selection */}
+          {!solved && selectionFillPath && (
+            <path
+              d={selectionFillPath}
+              fill="none"
+              stroke={`${tokens.color.accent}55`}
+              strokeWidth={1.5}
+              strokeDasharray="3,3"
+            />
+          )}
+
+          {/* Cells */}
+          {GRID.map((row, r) => row.map((letter, c) => {
+            const key = `${r},${c}`;
+            const selected = selectedSet.has(key);
+            const isHover = hoverCell === key && !selected;
+            const center = cellCenter(r, c);
+            const x = c * CELL_SIZE;
+            const y = r * CELL_SIZE;
+            const pathIdx = TARGET_PATH.findIndex(([tr, tc]) => tr === r && tc === c);
+
+            let cellFill = "transparent";
+            let letterColor = tokens.color.textMuted;
+            if (solved && selected) {
+              letterColor = tokens.color.white;
+            } else if (selected) {
+              letterColor = tokens.color.text;
+            } else if (isHover) {
+              cellFill = "rgba(255,255,255,0.03)";
+              letterColor = "rgba(228,233,239,0.82)";
+            }
+
+            return (
+              <g key={key}
+                onMouseEnter={() => {
+                  if (userInteracted && !isDraggingUser && !solved) setHoverCell(key);
+                }}
+                onMouseLeave={() => {
+                  if (userInteracted) setHoverCell((h) => (h === key ? null : h));
+                }}
+              >
+                <rect
+                  x={x} y={y}
+                  width={CELL_SIZE} height={CELL_SIZE}
+                  fill={cellFill}
+                  style={{ transition: "fill 0.18s ease" }}
+                />
+                <g style={{
+                  transformOrigin: `${center.x}px ${center.y}px`,
+                  animation: solved && selected && hopTrigger > 0
+                    ? `letterHop 0.55s ${pathIdx * 0.07}s ${tokens.ease} both`
+                    : undefined,
+                }}>
+                  <text
+                    x={center.x} y={center.y}
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    style={{
+                      fontFamily: tokens.font.display,
+                      fontWeight: 700,
+                      fontSize: 17,
+                      letterSpacing: "0.02em",
+                      fill: letterColor,
+                      transition: "fill 0.3s ease",
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    }}
+                  >{letter}</text>
+                </g>
+              </g>
+            );
+          }))}
+
+          {/* Drag polyline */}
+          {!solved && pathString && (
+            <polyline
+              points={pathString}
+              fill="none"
+              stroke={`${tokens.color.accent}AA`}
+              strokeWidth={3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={0.6}
+            />
+          )}
+
+          {/* Classic pointing-hand cursor — fingertip anchored near (0,0) */}
+          <g style={{
+            transform: `translate(${cursorPos.x}px, ${cursorPos.y}px)`,
+            opacity: cursorPos.visible ? 1 : 0,
+            transition: `transform 0.4s ${tokens.ease}, opacity 0.25s ease`,
+            pointerEvents: "none",
+          }}>
+            {/* Expanding press ripple */}
+            {cursorPressed && (
+              <circle cx={0} cy={0} r={0} fill="none" stroke={accentColor} strokeWidth={2.5}
+                style={{ animation: "demoCursorRipple 0.8s ease-out" }} />
+            )}
+            {/* Persistent pulsing halo while hovering */}
+            {!cursorPressed && cursorPos.visible && (
+              <circle cx={0} cy={0} r={18} fill="none" stroke={accentColor} strokeWidth={1.5} opacity={0.4}
+                style={{ animation: "demoHoverPulse 1.6s ease-in-out infinite" }} />
+            )}
+            {/* Pixel-style pointer hand, scaled and offset so fingertip aligns at (0,0) */}
+            <g style={{
+              transform: cursorPressed ? "scale(0.62)" : "scale(0.8)",
+              transformOrigin: "18px 0px",
+              transition: `transform 0.25s ${tokens.ease}`,
+              filter: `drop-shadow(0 2px 4px rgba(0,0,0,0.6)) drop-shadow(0 0 6px ${accentColor}77)`,
+            }}>
+              <g transform="translate(-18, 0)">
+                {/* Black outline layer */}
+                <path d="M15.2941 0H21.4118V3.05882H24.4706V15.2941H30.5882V18.3529H39.7647V21.4118H45.8824V24.4706H48.9412V27.5294H52V48.9412H48.9412V58.1176H45.8824V67.2941H15.2941V58.1176H12.2353V52H9.17647V45.8824H6.11765V39.7647H3.05882V36.7059H0V27.5294H9.17647V30.5882H12.2353V3.05882H15.2941"
+                  fill={tokens.color.bg} />
+                {/* White fill layer */}
+                <path d="M21.4118 3.05884V30.5883H24.4706V18.353H30.5883V30.5883H33.6471V21.4118H39.7647V33.6471H42.8235V24.4706H45.8824V27.5294H48.9412V48.9412H45.8824V58.1177H42.8235V64.2353H18.353V58.1177H15.2941V52H12.2353V45.8824H9.17649V39.7647H6.11766V36.7059H3.05884V30.5883H9.17649V33.6471H12.2353V36.7059H15.2941V3.05884"
+                  fill={tokens.color.white} />
+              </g>
+            </g>
+          </g>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 function Onboarding({ onClose }) {
   const [step, setStep] = useState(0);
   const slides = [
-    { title: "How to play", sub: "Find hidden supply chain attacks",
+    { title: "How to play", sub: null,
       pts: ["Drag or tap letters to form words", "Words can snake in any direction", "Every letter is used exactly once", "Stuck? Tap \u201CScan\u201D to reveal a word"],
-      demo: "grid" },
+      demo: "interactive" },
     { title: "Find the Missing Link", sub: null,
       pts: ["The Missing Link reveals the theme", "It connects opposite sides of the board", "It ties all the attacks together"],
       demo: "link" },
@@ -978,8 +1482,8 @@ function Onboarding({ onClose }) {
     const s = styleMap[state] || styleMap.def;
     return (
       <div key={key} style={{
-        width: 30, height: 30, display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: tokens.font.display, fontWeight: 700, fontSize: 12,
+        width: 50, height: 50, display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: tokens.font.display, fontWeight: 700, fontSize: 17,
         background: s.bg, border: `1px solid ${s.bd}`, color: s.co,
         animation: delay != null ? `obCellIn 0.25s ${delay}s both` : "none",
       }}>{letter}</div>
@@ -989,7 +1493,7 @@ function Onboarding({ onClose }) {
   const demoGrid = (rows, stateFn) => (
     <div style={{
       display: "inline-grid",
-      gridTemplateColumns: `repeat(${rows[0].length}, 30px)`,
+      gridTemplateColumns: `repeat(${rows[0].length}, 50px)`,
       gap: 0,
     }}>
       {rows.flatMap((row, r) => row.map((l, c) => {
@@ -1054,13 +1558,30 @@ function Onboarding({ onClose }) {
               display: "flex", justifyContent: "center", alignItems: "center",
               padding: "22px 0 18px", minHeight: 80,
             }}>
-              {slide.demo === "grid" && demoGrid(
-                [["M","E","R","G","E"],["B","U","I","L","D"]],
-                (r) => r === 0 ? "found" : "def"
+              {slide.demo === "interactive" && (
+                <div style={{
+                  width: "100%",
+                  background: tokens.color.surfaceRaised,
+                  border: `1px solid ${tokens.color.border}`,
+                  padding: "20px 16px",
+                  display: "flex", justifyContent: "center",
+                }}>
+                  <InteractiveDemo stepKey={step} />
+                </div>
               )}
-              {slide.demo === "link" && demoGrid(
-                [["D","E","P","L","O","Y"]],
-                () => "link"
+              {slide.demo === "link" && (
+                <div style={{
+                  width: "100%",
+                  background: tokens.color.surfaceRaised,
+                  border: `1px solid ${tokens.color.border}`,
+                  padding: "20px 16px",
+                  display: "flex", justifyContent: "center",
+                }}>
+                  {demoGrid(
+                    [["C","O","D","E"]],
+                    () => "link"
+                  )}
+                </div>
               )}
             </div>
             <div style={{ height: 1, background: tokens.color.borderSubtle, marginBottom: 16 }} />
@@ -1552,6 +2073,8 @@ const globalStyles = `
   @keyframes hintPulse{0%{fill:rgba(98,38,251,0.08)}50%{fill:rgba(98,38,251,0.22)}100%{fill:rgba(98,38,251,0.08)}}
   @keyframes scanNudge{0%,100%{border-color:rgba(68,253,43,0.25);color:rgba(228,233,239,0.70)}50%{border-color:rgba(68,253,43,0.5);color:rgba(228,233,239,0.9)}}
   @keyframes obCellIn{from{opacity:0;transform:scale(0.85)}to{opacity:1;transform:scale(1)}}
+  @keyframes demoCursorRipple{0%{r:10;opacity:0.9;stroke-width:3}100%{r:38;opacity:0;stroke-width:1}}
+  @keyframes demoHoverPulse{0%,100%{r:16;opacity:0.25}50%{r:22;opacity:0.55}}
   @keyframes themeGlow{0%,100%{border-color:rgba(98,38,251,0.2);box-shadow:0 0 8px rgba(98,38,251,0.05)}50%{border-color:rgba(98,38,251,0.5);box-shadow:0 0 16px rgba(98,38,251,0.15)}}
   @keyframes letterIn{from{opacity:0;transform:translateY(3px) scale(0.85)}to{opacity:1;transform:translateY(0) scale(1)}}
   @keyframes letterHop{0%{transform:translateY(0) scale(1)}30%{transform:translateY(-8px) scale(1.15)}60%{transform:translateY(0) scale(1)}80%{transform:translateY(-2px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
