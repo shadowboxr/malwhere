@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState, createContext, useContext } from "react";
 
 // ============================================================================
 // DESIGN TOKENS
@@ -14,7 +14,6 @@ const tokens = {
     textMuted: "rgba(228,233,239,0.70)",
     textFaint: "rgba(228,233,239,0.45)",
     accent: "#6226FB",
-    accentMid: "#7B4AFD",
     accentGlow: "rgba(98,38,251,0.3)",
     accentSoft: "rgba(98,38,251,0.10)",
     accentText: "#B8A1FD",
@@ -191,34 +190,91 @@ const WORDS = [
   },
 ];
 
+// Precompute lookup maps (avoid repeated .find calls)
+const WORDS_BY_ID = WORDS.reduce((acc, w) => { acc[w.id] = w; return acc; }, {});
+
 // ============================================================================
 // UTILITIES
 // ============================================================================
 const cellKey = (row, col) => `${row},${col}`;
-const pathKey = (path) => path.map(([r, c]) => cellKey(r, c)).join("|");
+const pathKey = (path) => path.map(([r, c]) => `${r},${c}`).join("|");
 const isAdjacent = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) === 1;
+const pathsEqualEitherDir = (a, b) => {
+  const ak = pathKey(a);
+  return ak === pathKey(b) || ak === pathKey([...b].reverse());
+};
 
 const matchWord = (path, foundIds) => {
   if (path.length < 2) return null;
-  const fwd = pathKey(path);
-  const rev = pathKey([...path].reverse());
-  return WORDS.find((w) => !foundIds.includes(w.id) && (pathKey(w.path) === fwd || pathKey(w.path) === rev)) || null;
+  return WORDS.find((w) => !foundIds.includes(w.id) && pathsEqualEitherDir(path, w.path)) || null;
 };
+
+// Compute hop duration for a word's celebration animation
+const hopDurationFor = (path) => 550 + path.length * 70;
+
+// ============================================================================
+// GEOMETRY — unified word perimeter calculation (used by main board + demo)
+// ============================================================================
+function computeWordPerimeterPath(path, cellSize) {
+  if (!path || path.length === 0) return "";
+  const cellSet = new Set(path.map(([r, c]) => `${r},${c}`));
+  const edges = [];
+  for (const [r, c] of path) {
+    const x1 = c * cellSize, y1 = r * cellSize;
+    const x2 = (c + 1) * cellSize, y2 = (r + 1) * cellSize;
+    if (!cellSet.has(`${r - 1},${c}`)) edges.push([x1, y1, x2, y1]);
+    if (!cellSet.has(`${r},${c + 1}`)) edges.push([x2, y1, x2, y2]);
+    if (!cellSet.has(`${r + 1},${c}`)) edges.push([x2, y2, x1, y2]);
+    if (!cellSet.has(`${r},${c - 1}`)) edges.push([x1, y2, x1, y1]);
+  }
+  const paths = [];
+  const used = new Set();
+  for (let i = 0; i < edges.length; i++) {
+    if (used.has(i)) continue;
+    const loop = [edges[i]];
+    used.add(i);
+    while (true) {
+      const [, , endX, endY] = loop[loop.length - 1];
+      let found = -1;
+      for (let j = 0; j < edges.length; j++) {
+        if (used.has(j)) continue;
+        if (edges[j][0] === endX && edges[j][1] === endY) { found = j; break; }
+      }
+      if (found === -1) break;
+      loop.push(edges[found]);
+      used.add(found);
+    }
+    const points = [[loop[0][0], loop[0][1]]];
+    for (const [, , x2, y2] of loop) points.push([x2, y2]);
+    const simplified = [points[0]];
+    for (let k = 1; k < points.length - 1; k++) {
+      const [px, py] = simplified[simplified.length - 1];
+      const [cx, cy] = points[k];
+      const [nx, ny] = points[k + 1];
+      if ((cx - px) * (ny - cy) - (cy - py) * (nx - cx) !== 0) simplified.push(points[k]);
+    }
+    let d = `M${simplified[0][0]} ${simplified[0][1]}`;
+    for (let k = 1; k < simplified.length; k++) d += `L${simplified[k][0]} ${simplified[k][1]}`;
+    d += "Z";
+    paths.push(d);
+  }
+  return paths.join(" ");
+}
 
 // ============================================================================
 // GAME STATE REDUCER
 // ============================================================================
 const initialGameState = {
-  phase: "loading", // loading | onboarding | playing | reveal | complete
-  foundWords: [], // array of word ids in order found
-  selection: [], // array of [row, col] currently selected
+  phase: "loading",
+  foundWords: [],
+  selection: [],
   isDragging: false,
   dragMoved: false,
-  flashingWord: null, // { path, isSpangram } — briefly shown after submission
+  flashingWord: null,
   shake: false,
-  activeCard: null, // word object currently shown in modal
+  activeCard: null,
   scanning: false,
-  scanHighlights: new Set(), // cells currently pulsing during scan sweep
+  scanHighlights: new Set(),
   scanNudge: false,
 };
 
@@ -278,25 +334,13 @@ function gameReducer(state, action) {
 // ============================================================================
 // HOOKS
 // ============================================================================
-function useMeasure() {
-  const ref = useRef(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const observer = new ResizeObserver(([entry]) =>
-      setSize({ width: entry.contentRect.width, height: entry.contentRect.height }),
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  return [ref, size];
-}
-
 function useTimeouts() {
   const timers = useRef([]);
   const schedule = useCallback((fn, delay) => {
-    const id = setTimeout(fn, delay);
+    const id = setTimeout(() => {
+      timers.current = timers.current.filter((t) => t !== id);
+      fn();
+    }, delay);
     timers.current.push(id);
     return id;
   }, []);
@@ -308,11 +352,39 @@ function useTimeouts() {
   return { schedule, clearAll };
 }
 
+// Detect coarse pointer (touch-primary) devices for input tuning
+function useCoarsePointer() {
+  const [isCoarse, setIsCoarse] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(pointer: coarse)");
+    const update = () => setIsCoarse(mq.matches);
+    update();
+    mq.addEventListener?.("change", update);
+    return () => mq.removeEventListener?.("change", update);
+  }, []);
+  return isCoarse;
+}
+
+// Prefers-reduced-motion
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(mq.matches);
+    update();
+    mq.addEventListener?.("change", update);
+    return () => mq.removeEventListener?.("change", update);
+  }, []);
+  return reduced;
+}
+
 // ============================================================================
 // ICON COMPONENTS
 // ============================================================================
 const ArrowIcon = ({ size = 12, color = "#FFFFFF" }) => (
-  <svg width={size} height={size} viewBox="0 0 14 14" fill="none">
+  <svg width={size} height={size} viewBox="0 0 14 14" fill="none" aria-hidden="true">
     <path d="M11.2 5.6L11.2 2.8L8.4 2.8L8.4 5.6L11.2 5.6Z" fill={color} />
     <path d="M11.2 11.2L11.2 8.4L8.4 8.4L8.4 11.2L11.2 11.2Z" fill={color} />
     <path d="M8.4 2.8L8.4 0L5.6 0L5.6 2.8L8.4 2.8Z" fill={color} />
@@ -324,135 +396,94 @@ const ArrowIcon = ({ size = 12, color = "#FFFFFF" }) => (
 );
 
 const SearchIcon = ({ size = 10 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx={11} cy={11} r={8} />
     <path d="M21 21l-4.35-4.35" />
   </svg>
 );
 
 const CloseIcon = () => (
-  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
     <path d="M18 6L6 18M6 6l12 12" />
   </svg>
 );
 
 // ============================================================================
-// BOARD — the single SVG containing everything
+// SHARED POINTER INPUT HOOK — unifies touch/mouse dedup + cell tracking
+// ============================================================================
+function usePointerCells(svgRef, rows, cols) {
+  const lastTouchTimeRef = useRef(0);
+
+  const isSyntheticMouseAfterTouch = useCallback((e) => {
+    const isTouch = !!e.touches;
+    const now = Date.now();
+    if (isTouch) {
+      lastTouchTimeRef.current = now;
+      return false;
+    }
+    return now - lastTouchTimeRef.current < 500;
+  }, []);
+
+  const coordFromPointer = useCallback((clientX, clientY) => {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const col = Math.floor(((clientX - rect.left) / rect.width) * cols);
+    const row = Math.floor(((clientY - rect.top) / rect.height) * rows);
+    if (row < 0 || row >= rows || col < 0 || col >= cols) return null;
+    return [row, col];
+  }, [svgRef, rows, cols]);
+
+  const cellFromEvent = useCallback((e) => {
+    const p = e.touches ? e.touches[0] : e;
+    return coordFromPointer(p.clientX, p.clientY);
+  }, [coordFromPointer]);
+
+  return { isSyntheticMouseAfterTouch, cellFromEvent };
+}
+
+// ============================================================================
+// BOARD
 // ============================================================================
 const BOARD_VIEWBOX = 400;
-const CELL = BOARD_VIEWBOX / BOARD_COLS; // 50
-const BORDER_INSET = 3;
+const CELL = BOARD_VIEWBOX / BOARD_COLS;
 
-function computeWordFillPath(word) {
-  // Build a single closed path that outlines the entire word shape.
-  // We trace the perimeter by walking the boundary edges in order.
-  const cellSet = new Set(word.path.map(([r, c]) => cellKey(r, c)));
-  // Collect boundary edges as directed segments
-  // Each edge is [x1, y1, x2, y2] in clockwise direction around the shape
-  const edges = [];
-  for (const [r, c] of word.path) {
-    const x1 = c * CELL, y1 = r * CELL;
-    const x2 = (c + 1) * CELL, y2 = (r + 1) * CELL;
-    if (!cellSet.has(cellKey(r - 1, c))) edges.push([x1, y1, x2, y1]); // top L->R
-    if (!cellSet.has(cellKey(r, c + 1))) edges.push([x2, y1, x2, y2]); // right T->B
-    if (!cellSet.has(cellKey(r + 1, c))) edges.push([x2, y2, x1, y2]); // bot R->L
-    if (!cellSet.has(cellKey(r, c - 1))) edges.push([x1, y2, x1, y1]); // left B->T
-  }
-  // Stitch edges into closed loops
-  const paths = [];
-  const used = new Set();
-  for (let i = 0; i < edges.length; i++) {
-    if (used.has(i)) continue;
-    const loop = [edges[i]];
-    used.add(i);
-    while (true) {
-      const last = loop[loop.length - 1];
-      const endX = last[2], endY = last[3];
-      let found = -1;
-      for (let j = 0; j < edges.length; j++) {
-        if (used.has(j)) continue;
-        if (edges[j][0] === endX && edges[j][1] === endY) {
-          found = j;
-          break;
-        }
-      }
-      if (found === -1) break;
-      loop.push(edges[found]);
-      used.add(found);
-    }
-    // Convert loop to path data, collapsing collinear segments
-    if (loop.length) {
-      const points = [[loop[0][0], loop[0][1]]];
-      for (const [, , x2, y2] of loop) points.push([x2, y2]);
-      // Remove collinear interior points
-      const simplified = [points[0]];
-      for (let k = 1; k < points.length - 1; k++) {
-        const [px, py] = simplified[simplified.length - 1];
-        const [cx, cy] = points[k];
-        const [nx, ny] = points[k + 1];
-        const dx1 = cx - px, dy1 = cy - py;
-        const dx2 = nx - cx, dy2 = ny - cy;
-        if (dx1 * dy2 - dy1 * dx2 !== 0) simplified.push(points[k]);
-      }
-      let d = `M${simplified[0][0]} ${simplified[0][1]}`;
-      for (let k = 1; k < simplified.length; k++) d += `L${simplified[k][0]} ${simplified[k][1]}`;
-      d += "Z";
-      paths.push(d);
-    }
-  }
-  return paths.join(" ");
-}
-
-function computeWordBorderPath(word) {
-  const cellSet = new Set(word.path.map(([r, c]) => cellKey(r, c)));
-  const segs = [];
-  for (const [r, c] of word.path) {
-    const hasTop = cellSet.has(cellKey(r - 1, c));
-    const hasBot = cellSet.has(cellKey(r + 1, c));
-    const hasLeft = cellSet.has(cellKey(r, c - 1));
-    const hasRight = cellSet.has(cellKey(r, c + 1));
-    const x1 = c * CELL + BORDER_INSET;
-    const y1 = r * CELL + BORDER_INSET;
-    const x2 = (c + 1) * CELL - BORDER_INSET;
-    const y2 = (r + 1) * CELL - BORDER_INSET;
-    if (!hasTop) {
-      const sx = hasLeft ? x1 - BORDER_INSET : x1;
-      const ex = hasRight ? x2 + BORDER_INSET : x2;
-      segs.push(`M${sx} ${y1}L${ex} ${y1}`);
-    }
-    if (!hasBot) {
-      const sx = hasLeft ? x1 - BORDER_INSET : x1;
-      const ex = hasRight ? x2 + BORDER_INSET : x2;
-      segs.push(`M${sx} ${y2}L${ex} ${y2}`);
-    }
-    if (!hasLeft) {
-      const sy = hasTop ? y1 - BORDER_INSET : y1;
-      const ey = hasBot ? y2 + BORDER_INSET : y2;
-      segs.push(`M${x1} ${sy}L${x1} ${ey}`);
-    }
-    if (!hasRight) {
-      const sy = hasTop ? y1 - BORDER_INSET : y1;
-      const ey = hasBot ? y2 + BORDER_INSET : y2;
-      segs.push(`M${x2} ${sy}L${x2} ${ey}`);
-    }
-  }
-  return segs.join(" ");
-}
+const ScheduleContext = createContext(null);
+const useScheduleContext = () => useContext(ScheduleContext);
 
 function Board({ state, dispatch, hoverCell, setHoverCell }) {
   const svgRef = useRef(null);
-  const dragPointerRef = useRef(false);
-  const lastTouchTimeRef = useRef(0);
-  const { timeouts } = useScheduleRef();
+  const dragMovedRef = useRef(false);
+  const { schedule } = useScheduleContext();
+  const { isSyntheticMouseAfterTouch, cellFromEvent } = usePointerCells(svgRef, BOARD_ROWS, BOARD_COLS);
+  const isCoarse = useCoarsePointer();
 
-  // Cell states derived in one pass
+  // Cache word fill paths (they never change)
+  const wordFillPaths = useMemo(() => {
+    const map = {};
+    WORDS.forEach((w) => { map[w.id] = computeWordPerimeterPath(w.path, CELL); });
+    return map;
+  }, []);
+
+  const selectionFillPath = useMemo(
+    () => state.selection.length ? computeWordPerimeterPath(state.selection, CELL) : "",
+    [state.selection]
+  );
+
+  const flashFillPath = useMemo(
+    () => state.flashingWord ? computeWordPerimeterPath(state.flashingWord.path, CELL) : "",
+    [state.flashingWord]
+  );
+
+  // Derived per-cell states
   const cellStates = useMemo(() => {
-    const map = {}; // key -> { kind, wordId, pathIdx }
+    const map = {};
     for (const wid of state.foundWords) {
-      const word = WORDS.find((w) => w.id === wid);
+      const word = WORDS_BY_ID[wid];
       if (!word) continue;
       word.path.forEach(([r, c], idx) => {
-        map[cellKey(r, c)] = { kind: word.isSpangram ? "foundSpangram" : "foundWord", wordId: wid, pathIdx: idx };
+        map[cellKey(r, c)] = { kind: word.isSpangram ? "foundSpangram" : "foundWord", pathIdx: idx };
       });
     }
     if (state.flashingWord) {
@@ -460,106 +491,83 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
         map[cellKey(r, c)] = { kind: state.flashingWord.isSpangram ? "flashSpangram" : "flashWord", pathIdx: idx };
       });
     }
-    const selSet = new Set(state.selection.map(([r, c]) => cellKey(r, c)));
-    for (const key of selSet) {
-      if (!map[key]) map[key] = { kind: "selected" };
+    for (const [r, c] of state.selection) {
+      const k = cellKey(r, c);
+      if (!map[k]) map[k] = { kind: "selected" };
     }
-    for (const key of state.scanHighlights) {
-      if (!map[key]) map[key] = { kind: "hint" };
+    for (const k of state.scanHighlights) {
+      if (!map[k]) map[k] = { kind: "hint" };
     }
-    if (hoverCell && !map[hoverCell]) {
+    if (hoverCell && !map[hoverCell] && !isCoarse) {
       map[hoverCell] = { kind: "hover" };
     }
     return map;
-  }, [state.foundWords, state.flashingWord, state.selection, state.scanHighlights, hoverCell]);
+  }, [state.foundWords, state.flashingWord, state.selection, state.scanHighlights, hoverCell, isCoarse]);
 
-  const coordFromPointer = useCallback((clientX, clientY) => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const rect = svg.getBoundingClientRect();
-    const col = Math.floor(((clientX - rect.left) / rect.width) * BOARD_COLS);
-    const row = Math.floor(((clientY - rect.top) / rect.height) * BOARD_ROWS);
-    if (row < 0 || row >= BOARD_ROWS || col < 0 || col >= BOARD_COLS) return null;
-    return [row, col];
-  }, []);
+  const submitWord = useCallback((word) => {
+    dispatch({ type: "FLASH_WORD", flash: { path: word.path, isSpangram: word.isSpangram } });
+    const hop = hopDurationFor(word.path);
+    schedule(() => {
+      dispatch({ type: "COMMIT_WORD", word });
+      schedule(() => dispatch({ type: "OPEN_CARD", word }), 500);
+    }, hop);
+  }, [dispatch, schedule]);
+
+  const rejectSelection = useCallback(() => {
+    dispatch({ type: "SHAKE", shake: true });
+    schedule(() => dispatch({ type: "SHAKE", shake: false }), 350);
+    dispatch({ type: "CLEAR_SELECTION" });
+  }, [dispatch, schedule]);
 
   const handlePointerDown = useCallback((e) => {
     if (state.phase !== "playing" || state.activeCard || state.scanning) return;
-    // On mobile, a tap fires both touchstart AND a synthetic mousedown ~300ms later.
-    // Ignore mouse events that follow a recent touch to prevent double-processing.
-    const isTouch = !!e.touches;
-    const now = Date.now();
-    if (isTouch) {
-      lastTouchTimeRef.current = now;
-    } else if (now - lastTouchTimeRef.current < 500) {
-      return;
-    }
+    if (isSyntheticMouseAfterTouch(e)) return;
     e.preventDefault();
-    const point = isTouch ? e.touches[0] : e;
-    const cell = coordFromPointer(point.clientX, point.clientY);
+    const cell = cellFromEvent(e);
     if (!cell) return;
-    dragPointerRef.current = false;
+    dragMovedRef.current = false;
 
-    // If we already have a selection, tapping determines action
     if (state.selection.length === 0) {
       dispatch({ type: "START_SELECTION", cell });
       return;
     }
-    const lastIdx = state.selection.length - 1;
-    const foundAt = state.selection.findIndex(([r, c]) => r === cell[0] && c === cell[1]);
+    const selection = state.selection;
+    const lastIdx = selection.length - 1;
+    const foundAt = selection.findIndex(([r, c]) => r === cell[0] && c === cell[1]);
+
     if (foundAt === lastIdx) {
-      // Tapped the last letter — attempt submission
-      const matched = matchWord(state.selection, state.foundWords);
-      if (matched) {
-        dispatch({ type: "FLASH_WORD", flash: { path: matched.path, isSpangram: matched.isSpangram } });
-        const hopDuration = 550 + matched.path.length * 70;
-        timeouts.schedule(() => {
-          dispatch({ type: "COMMIT_WORD", word: matched });
-          timeouts.schedule(() => dispatch({ type: "OPEN_CARD", word: matched }), 500);
-        }, hopDuration);
-      } else if (state.selection.length >= 2) {
-        dispatch({ type: "SHAKE", shake: true });
-        timeouts.schedule(() => dispatch({ type: "SHAKE", shake: false }), 350);
-        dispatch({ type: "CLEAR_SELECTION" });
-      } else {
-        dispatch({ type: "CLEAR_SELECTION" });
-      }
+      // Tap last = submit
+      const matched = matchWord(selection, state.foundWords);
+      if (matched) submitWord(matched);
+      else if (selection.length >= 2) rejectSelection();
+      else dispatch({ type: "CLEAR_SELECTION" });
       return;
     }
     if (foundAt >= 0) {
-      dispatch({ type: "TRIM_SELECTION", selection: state.selection.slice(0, foundAt + 1) });
+      dispatch({ type: "TRIM_SELECTION", selection: selection.slice(0, foundAt + 1) });
       return;
     }
-    const prev = state.selection[lastIdx];
+    const prev = selection[lastIdx];
     if (isAdjacent(prev, cell)) {
-      const next = [...state.selection, cell];
+      const next = [...selection, cell];
       const matched = matchWord(next, state.foundWords);
-      if (matched) {
-        dispatch({ type: "FLASH_WORD", flash: { path: matched.path, isSpangram: matched.isSpangram } });
-        const hopDuration = 550 + matched.path.length * 70;
-        timeouts.schedule(() => {
-          dispatch({ type: "COMMIT_WORD", word: matched });
-          timeouts.schedule(() => dispatch({ type: "OPEN_CARD", word: matched }), 500);
-        }, hopDuration);
-      } else {
-        dispatch({ type: "TAP_CELL", selection: next });
-      }
+      if (matched) submitWord(matched);
+      else dispatch({ type: "TAP_CELL", selection: next });
     } else {
       dispatch({ type: "TAP_CELL", selection: [cell] });
     }
-  }, [state.phase, state.activeCard, state.scanning, state.selection, state.foundWords, coordFromPointer, dispatch, timeouts]);
+  }, [state.phase, state.activeCard, state.scanning, state.selection, state.foundWords,
+      isSyntheticMouseAfterTouch, cellFromEvent, dispatch, submitWord, rejectSelection]);
 
   const handlePointerMove = useCallback((e) => {
     if (!state.isDragging) return;
     e.preventDefault();
-    const point = e.touches ? e.touches[0] : e;
-    const cell = coordFromPointer(point.clientX, point.clientY);
-    if (!cell) return;
-    if (state.selection.length === 0) return;
+    const cell = cellFromEvent(e);
+    if (!cell || state.selection.length === 0) return;
     const last = state.selection[state.selection.length - 1];
     if (cell[0] === last[0] && cell[1] === last[1]) return;
-    dragPointerRef.current = true;
-    // Retreat
+    dragMovedRef.current = true;
+
     if (state.selection.length >= 2) {
       const prev = state.selection[state.selection.length - 2];
       if (cell[0] === prev[0] && cell[1] === prev[1]) {
@@ -567,190 +575,64 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
         return;
       }
     }
-    // Already in path or not adjacent
     if (state.selection.some(([r, c]) => r === cell[0] && c === cell[1])) return;
     if (!isAdjacent(last, cell)) return;
     dispatch({ type: "EXTEND_SELECTION", selection: [...state.selection, cell] });
-  }, [state.isDragging, state.selection, coordFromPointer, dispatch]);
+  }, [state.isDragging, state.selection, cellFromEvent, dispatch]);
 
   const handlePointerUp = useCallback(() => {
     if (!state.isDragging) return;
     dispatch({ type: "END_DRAG" });
-    // Only evaluate as a submission if the user actually dragged across cells.
-    // For a simple tap (no movement), leave the selection in place so the user
-    // can tap additional letters to build the word.
-    if (!dragPointerRef.current) return;
+    if (!dragMovedRef.current) return;
     const matched = matchWord(state.selection, state.foundWords);
-    if (matched) {
-      dispatch({ type: "FLASH_WORD", flash: { path: matched.path, isSpangram: matched.isSpangram } });
-      const hopDuration = 550 + matched.path.length * 70;
-      timeouts.schedule(() => {
-        dispatch({ type: "COMMIT_WORD", word: matched });
-        timeouts.schedule(() => dispatch({ type: "OPEN_CARD", word: matched }), 500);
-      }, hopDuration);
-    } else if (state.selection.length >= 2) {
-      dispatch({ type: "SHAKE", shake: true });
-      timeouts.schedule(() => dispatch({ type: "SHAKE", shake: false }), 350);
-      dispatch({ type: "CLEAR_SELECTION" });
-    } else {
-      dispatch({ type: "END_DRAG" });
-    }
-  }, [state.isDragging, state.selection, state.foundWords, dispatch, timeouts]);
+    if (matched) submitWord(matched);
+    else if (state.selection.length >= 2) rejectSelection();
+  }, [state.isDragging, state.selection, state.foundWords, dispatch, submitWord, rejectSelection]);
 
   useEffect(() => {
     if (!state.isDragging) return;
     const up = () => handlePointerUp();
     window.addEventListener("mouseup", up);
     window.addEventListener("touchend", up);
+    window.addEventListener("touchcancel", up);
     return () => {
       window.removeEventListener("mouseup", up);
       window.removeEventListener("touchend", up);
+      window.removeEventListener("touchcancel", up);
     };
   }, [state.isDragging, handlePointerUp]);
 
-  // Render cell visuals. Found words are drawn as a single unified path first (below),
-  // so per-cell fills skip found/flash states.
-  const renderCell = (row, col) => {
-    const letter = BOARD_LETTERS[row][col];
-    const key = cellKey(row, col);
-    const entry = cellStates[key] || { kind: "default" };
-    const cx = col * CELL + CELL / 2;
-    const cy = row * CELL + CELL / 2;
-
-    let fill = "transparent";
-    let textColor = tokens.color.textMuted;
-    let pathIdx = entry.pathIdx ?? -1;
-    let hopAnim = false;
-
-    switch (entry.kind) {
-      case "foundWord":
-        fill = "transparent"; // drawn as word-fill path below
-        textColor = tokens.color.white;
-        break;
-      case "foundSpangram":
-        fill = "transparent";
-        textColor = tokens.color.bg;
-        break;
-      case "flashWord":
-        fill = "transparent";
-        textColor = tokens.color.white;
-        hopAnim = true;
-        break;
-      case "flashSpangram":
-        fill = "transparent";
-        textColor = tokens.color.bg;
-        hopAnim = true;
-        break;
-      case "selected":
-        fill = "transparent"; // drawn as unified path above
-        textColor = tokens.color.text;
-        break;
-      case "hint":
-        fill = "rgba(98,38,251,0.12)";
-        textColor = tokens.color.text;
-        break;
-      case "hover":
-        fill = "rgba(255,255,255,0.03)";
-        textColor = "rgba(228,233,239,0.82)";
-        break;
-      default:
-        fill = "transparent";
-    }
-
-    const isFound = entry.kind === "foundWord" || entry.kind === "foundSpangram";
-
-    return (
-      <g key={key}
-        onMouseEnter={() => !state.isDragging && !state.activeCard && !state.scanning && setHoverCell(key)}
-        onMouseLeave={() => setHoverCell((h) => (h === key ? null : h))}
-      >
-        <rect x={col * CELL} y={row * CELL} width={CELL} height={CELL} fill={fill}
-          style={{
-            transition: "fill 0.18s ease",
-            animation: entry.kind === "hint" ? "hintPulse 1.5s ease-in-out" : undefined,
-          }}
-        />
-        <g style={{
-          transformOrigin: `${cx}px ${cy}px`,
-          animation: hopAnim
-            ? `letterHop 0.55s ${pathIdx * 0.07}s ${tokens.ease} both`
-            : undefined,
-        }}>
-          <text
-            x={cx}
-            y={cy}
-            textAnchor="middle"
-            dominantBaseline="central"
-            style={{
-              fontFamily: tokens.font.display,
-              fontWeight: 700,
-              fontSize: 17,
-              letterSpacing: "0.02em",
-              fill: textColor,
-              transition: "fill 0.3s ease",
-              userSelect: "none",
-              WebkitUserSelect: "none",
-              pointerEvents: "none",
-            }}
-          >{letter}</text>
-        </g>
-      </g>
-    );
-  };
-
-  // Drag polyline as SVG line
-  const dragLine = state.selection.length >= 2 ? (
-    <polyline
-      points={state.selection.map(([r, c]) => `${c * CELL + CELL / 2},${r * CELL + CELL / 2}`).join(" ")}
-      fill="none" stroke={`${tokens.color.accent}AA`} strokeWidth={3}
-      strokeLinecap="round" strokeLinejoin="round" opacity={0.6}
-      style={{ pointerEvents: "none" }}
-    />
-  ) : null;
+  const interactive = state.phase === "playing" && !state.activeCard && !state.scanning;
 
   return (
-    <div style={{
-      width: "100%", maxWidth: 420,
-      animation: state.shake ? "shake 0.35s ease" : undefined,
-      touchAction: "none", userSelect: "none", WebkitUserSelect: "none",
-    }}>
-      <svg ref={svgRef}
+    <div
+      style={{
+        width: "100%", maxWidth: 420,
+        animation: state.shake ? "shake 0.35s ease" : undefined,
+        touchAction: "none", userSelect: "none", WebkitUserSelect: "none",
+      }}
+    >
+      <svg
+        ref={svgRef}
         viewBox={`0 0 ${BOARD_VIEWBOX} ${BOARD_VIEWBOX}`}
-        width="100%" height="auto"
-        style={{ display: "block", cursor: state.phase === "playing" ? "pointer" : "default" }}
+        width="100%"
+        height="auto"
+        role="application"
+        aria-label="Word puzzle board"
+        style={{ display: "block", cursor: interactive ? "pointer" : "default" }}
         onMouseDown={handlePointerDown}
         onMouseMove={handlePointerMove}
         onTouchStart={handlePointerDown}
         onTouchMove={handlePointerMove}
       >
-        <defs>
-          <filter id="insetSoft" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="6" />
-          </filter>
-          <filter id="insetTight" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" />
-          </filter>
-          <filter id="outerHalo" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="8" />
-          </filter>
-          {/* Clip paths for each found word so inset shadow stays within the shape */}
-          {state.foundWords.map((wid) => {
-            const word = WORDS.find((w) => w.id === wid);
-            if (!word) return null;
-            return (
-              <clipPath key={`clip-${wid}`} id={`clip-${wid}`}>
-                <path d={computeWordFillPath(word)} />
-              </clipPath>
-            );
-          })}
-        </defs>
-        {/* Unified word fills with clean outer stroke */}
+        {/* Found word fills */}
         {state.foundWords.map((wid) => {
-          const word = WORDS.find((w) => w.id === wid);
+          const word = WORDS_BY_ID[wid];
           if (!word) return null;
           return (
-            <path key={`fill-${wid}`}
-              d={computeWordFillPath(word)}
+            <path
+              key={`fill-${wid}`}
+              d={wordFillPaths[wid]}
               fill={word.isSpangram ? tokens.color.spangram : tokens.color.accent}
               stroke="rgba(0,0,0,0.45)"
               strokeWidth={2.5}
@@ -761,10 +643,10 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
           );
         })}
 
-        {/* Flashing word fill (during celebration) */}
+        {/* Flashing word */}
         {state.flashingWord && (
           <path
-            d={computeWordFillPath({ path: state.flashingWord.path })}
+            d={flashFillPath}
             fill={state.flashingWord.isSpangram ? tokens.color.spangram : tokens.color.accent}
             stroke="rgba(0,0,0,0.45)"
             strokeWidth={2.5}
@@ -774,44 +656,109 @@ function Board({ state, dispatch, hoverCell, setHoverCell }) {
           />
         )}
 
-        {/* Selection fill as unified path */}
-        {state.selection.length > 0 && (
-          <path
-            d={computeWordFillPath({ path: state.selection })}
-            fill="rgba(98,38,251,0.08)"
-            style={{ pointerEvents: "none" }}
-          />
+        {/* Selection fill + dashed outline */}
+        {selectionFillPath && (
+          <>
+            <path d={selectionFillPath} fill="rgba(98,38,251,0.08)" style={{ pointerEvents: "none" }} />
+            <path
+              d={selectionFillPath}
+              fill="none"
+              stroke={`${tokens.color.accent}55`}
+              strokeWidth={1.5}
+              strokeDasharray="3,3"
+              style={{ pointerEvents: "none" }}
+            />
+          </>
         )}
 
-        {/* Selection dashed outline */}
-        {state.selection.length > 0 && (
-          <path
-            d={computeWordFillPath({ path: state.selection })}
-            fill="none"
-            stroke={`${tokens.color.accent}55`}
-            strokeWidth={1.5}
-            strokeDasharray="3,3"
-            style={{ pointerEvents: "none" }}
-          />
-        )}
+        {/* Cells */}
+        {BOARD_LETTERS.map((row, r) => row.map((letter, c) => {
+          const key = cellKey(r, c);
+          const entry = cellStates[key] || { kind: "default" };
+          const cx = c * CELL + CELL / 2;
+          const cy = r * CELL + CELL / 2;
 
-        {/* Cell rects + letters */}
-        {BOARD_LETTERS.map((row, r) => row.map((_, c) => renderCell(r, c)))}
+          let fill = "transparent";
+          let textColor = tokens.color.textMuted;
+          let hopAnim = false;
+
+          switch (entry.kind) {
+            case "foundWord": textColor = tokens.color.white; break;
+            case "foundSpangram": textColor = tokens.color.bg; break;
+            case "flashWord": textColor = tokens.color.white; hopAnim = true; break;
+            case "flashSpangram": textColor = tokens.color.bg; hopAnim = true; break;
+            case "selected": textColor = tokens.color.text; break;
+            case "hint":
+              fill = "rgba(98,38,251,0.12)";
+              textColor = tokens.color.text;
+              break;
+            case "hover":
+              fill = "rgba(255,255,255,0.03)";
+              textColor = "rgba(228,233,239,0.82)";
+              break;
+          }
+
+          const pathIdx = entry.pathIdx ?? 0;
+
+          return (
+            <g
+              key={key}
+              onMouseEnter={interactive && !state.isDragging ? () => setHoverCell(key) : undefined}
+              onMouseLeave={interactive ? () => setHoverCell((h) => (h === key ? null : h)) : undefined}
+            >
+              <rect
+                x={c * CELL}
+                y={r * CELL}
+                width={CELL}
+                height={CELL}
+                fill={fill}
+                style={{
+                  transition: "fill 0.18s ease",
+                  animation: entry.kind === "hint" ? "hintPulse 1.5s ease-in-out" : undefined,
+                }}
+              />
+              <g style={{
+                transformOrigin: `${cx}px ${cy}px`,
+                animation: hopAnim ? `letterHop 0.55s ${pathIdx * 0.07}s ${tokens.ease} both` : undefined,
+              }}>
+                <text
+                  x={cx}
+                  y={cy}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  style={{
+                    fontFamily: tokens.font.display,
+                    fontWeight: 700,
+                    fontSize: 17,
+                    letterSpacing: "0.02em",
+                    fill: textColor,
+                    transition: "fill 0.3s ease",
+                    userSelect: "none",
+                    WebkitUserSelect: "none",
+                    pointerEvents: "none",
+                  }}
+                >{letter}</text>
+              </g>
+            </g>
+          );
+        }))}
 
         {/* Drag polyline */}
-        {dragLine}
-
-        {/* Word perimeter borders removed — fill color stands on its own */}
+        {state.selection.length >= 2 && (
+          <polyline
+            points={state.selection.map(([r, c]) => `${c * CELL + CELL / 2},${r * CELL + CELL / 2}`).join(" ")}
+            fill="none"
+            stroke={`${tokens.color.accent}AA`}
+            strokeWidth={3}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={0.6}
+            style={{ pointerEvents: "none" }}
+          />
+        )}
       </svg>
     </div>
   );
-}
-
-// Wrapper hook so Board can access timeouts cleanly
-const ScheduleContext = React.createContext(null);
-function useScheduleRef() {
-  const ctx = React.useContext(ScheduleContext);
-  return { timeouts: ctx };
 }
 
 // ============================================================================
@@ -824,10 +771,13 @@ function WordPill({ word, found, onClick }) {
   const border = found ? (isSpangram ? tokens.color.spangram : `${tokens.color.accent}88`) : tokens.color.borderSubtle;
   const bgSoft = found ? (isSpangram ? tokens.color.spangramSoft : tokens.color.accentSoft) : "transparent";
   const clickable = found && !!onClick;
+
   return (
     <button
+      type="button"
       onClick={clickable ? onClick : undefined}
       disabled={!clickable}
+      aria-label={found ? `View ${word.display} details` : "Unrevealed word"}
       style={{
         display: "inline-flex", alignItems: "center", gap: 5,
         padding: "5px 10px", borderRadius: 0,
@@ -852,11 +802,20 @@ function WordPill({ word, found, onClick }) {
 }
 
 // ============================================================================
-// SHARED FOOTER (always visible)
+// FOOTER
 // ============================================================================
+function ChainguardLogo() {
+  return (
+    <svg viewBox="0 0 325 52" width={65} height={10} fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Chainguard">
+      <path fill="#fff" fillRule="evenodd" d="M44.35,28.13c.43-1.47.66-3.08.66-4.83C45.01,12.34,35.97,0,26.94,0S8.87,12.34,8.87,23.3c0,2.39.43,4.52,1.2,6.38l-5.43-.31c-2.21-.12-4.25,1.46-3.9,3.65.13.85.39,1.72.84,2.47-1.54,1.08-2.16,3.08-.92,4.64,1.25,1.57,3.08,3.01,5.6,3.01,2.73,0,4.38-.71,5.37-1.6.07.39.22.77.46,1.13,1.23,1.87,3.26,3.92,6.26,3.92,5.11,0,5.68-3.22,5.96-4.83.02-.13.04-.24.06-.35l3.41-1.71,3.41,1.71c.02.1.04.22.06.35.29,1.61.86,4.83,5.96,4.83,3,0,5.03-2.05,6.26-3.92.05-.07.09-.15.13-.22.96.42,2.24.69,3.93.69,2.52,0,4.35-1.44,5.6-3.01,1.53-1.92.23-4.49-2.11-5.22l-.77-.24c2.27-1.18,2.6-3.4,2.36-5.35-.27-2.2-2.67-3.15-4.76-2.42l-3.53,1.24ZM27.8,39.67h0,0s0,0,0,0Z" />
+      <path fill="#fff" d="M85.32,41.74c-10.37,0-17-6.75-17-18.64,0-11.24,7.48-18.14,17.35-18.14,8.52,0,14.66,4.9,15.55,13.19h-6.78c-.65-4.55-3.64-7.65-8.77-7.65-6.18,0-10.62,4.75-10.62,12.59s4.39,13.09,10.47,13.09c5.18,0,8.62-3.35,9.32-8h6.53c-.85,8.1-6.68,13.54-16.05,13.54ZM106.12,40.84V5.86h6.08v11.69c0,.7-.05,1.45-.2,2.4,1.35-2.45,3.64-4.3,7.48-4.3,5.38,0,8.57,3.8,8.57,9.8v15.39h-6.08v-14.49c0-3.6-1.74-5.85-4.59-5.85-2.99,0-5.18,2.65-5.18,6.05v14.29h-6.08ZM141.14,41.74c-4.24,0-8.38-2.8-8.38-7.6,0-5.5,4.24-7.4,9.47-8.1l3.49-.45c1.99-.25,2.69-1,2.69-2.2,0-1.7-1.4-3.2-3.99-3.2-2.84,0-4.64,1.6-4.89,4.15h-6.28c.4-5.1,4.54-8.7,10.82-8.7,7.43,0,10.42,4,10.42,10.84v14.34h-5.63v-1c0-.8.1-1.55.25-2.35-1.3,2.4-3.79,4.25-7.98,4.25ZM142.79,37.25c3.24,0,5.83-2.4,5.83-5.85v-2.65c-.55.5-1.4.75-2.89,1.05l-1.99.4c-2.84.55-4.79,1.5-4.79,3.7s1.7,3.35,3.84,3.35ZM160.45,40.84v-24.39h6.08v24.39h-6.08ZM160.3,12.76v-6.4h6.33v6.4h-6.33ZM172.82,40.84v-24.39h6.08v1.1c0,.7-.05,1.45-.2,2.4,1.35-2.45,3.64-4.3,7.48-4.3,5.38,0,8.57,3.8,8.57,9.8v15.39h-6.08v-14.49c0-3.6-1.75-5.85-4.59-5.85-2.99,0-5.18,2.65-5.18,6.05v14.29h-6.08ZM211.62,51.94c-7.18,0-11.27-3.85-11.27-9.4h6.18c.1,2.9,1.94,4.6,5.23,4.6s5.88-1.9,5.88-5.55v-2.65c0-1.1.05-2.1.2-3.05-1.45,2.2-3.79,4.05-7.58,4.05-6.33,0-10.92-4.45-10.92-12.14s5.28-12.14,10.62-12.14c4.29,0,6.43,1.75,7.88,4.3-.15-.85-.2-1.5-.2-2.4v-1.1h6.08v23.64c0,8-4.94,11.84-12.11,11.84ZM211.82,35.1c3.59,0,6.18-3.05,6.18-7.3s-2.59-7.3-6.18-7.3-6.28,3.05-6.28,7.3,2.59,7.3,6.28,7.3ZM238.44,41.74c-4.89,0-8.72-3.35-8.72-9.8v-15.49h6.13v14.54c0,3.4,1.49,5.85,4.44,5.85,3.09,0,5.28-2.3,5.28-5.9v-14.49h6.08v24.39h-6.03v-1c0-.75.1-1.6.25-2.35-1.25,2.35-3.39,4.25-7.43,4.25ZM264.99,41.74c-4.24,0-8.37-2.8-8.37-7.6,0-5.5,4.24-7.4,9.47-8.1l3.49-.45c1.99-.25,2.69-1,2.69-2.2,0-1.7-1.4-3.2-3.99-3.2-2.84,0-4.64,1.6-4.89,4.15h-6.28c.4-5.1,4.54-8.7,10.82-8.7,7.43,0,10.42,4,10.42,10.84v14.34h-5.63v-1c0-.8.1-1.55.25-2.35-1.3,2.4-3.79,4.25-7.98,4.25ZM266.63,37.25c3.24,0,5.83-2.4,5.83-5.85v-2.65c-.55.5-1.4.75-2.89,1.05l-1.99.4c-2.84.55-4.79,1.5-4.79,3.7s1.7,3.35,3.84,3.35ZM284.29,40.84v-24.39h6.08v1.85c0,.9-.05,1.65-.2,2.55,1.3-2.75,3.49-5.2,7.13-5.2.5,0,.9.05,1.3.15v5.9c-.4-.1-.95-.2-1.75-.2-3.74,0-6.48,1.9-6.48,7.25v12.09h-6.08ZM311.49,41.74c-6.43,0-11.12-4.4-11.12-12.99s5.53-13.09,11.22-13.09c3.79,0,6.13,1.95,7.53,4.3-.2-.9-.2-1.65-.2-2.4V5.86h6.08v34.98h-6.08v-1c0-.85,0-1.5.2-2.35-.95,1.8-3.14,4.25-7.63,4.25ZM312.93,36.95c3.64,0,6.33-3.35,6.33-8.25s-2.69-8.2-6.33-8.2-6.38,3.35-6.38,8.2,2.74,8.25,6.38,8.25Z" />
+    </svg>
+  );
+}
+
 function Footer() {
   return (
-    <footer style={{ padding: "16px 16px 24px", opacity: 0.35, position: "relative", zIndex: 1 }}>
+    <footer style={{ padding: "16px 16px 24px", opacity: 0.35, position: "relative", zIndex: 1, flexShrink: 0 }}>
       <div style={{
         maxWidth: 480, margin: "0 auto",
         display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -870,27 +829,23 @@ function Footer() {
           }}>A word game by</span>
           <ChainguardLogo />
         </div>
-        <a href="https://www.chainguard.dev/" target="_blank" rel="noopener noreferrer" style={{
-          fontFamily: tokens.font.mono, fontWeight: 400,
-          fontSize: "clamp(7px, 1.8vw, 9px)", letterSpacing: "0.08em",
-          textTransform: "uppercase", color: tokens.color.text, textDecoration: "none",
-        }}>CHAINGUARD.DEV</a>
+        <a
+          href="https://www.chainguard.dev/"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            fontFamily: tokens.font.mono, fontWeight: 400,
+            fontSize: "clamp(7px, 1.8vw, 9px)", letterSpacing: "0.08em",
+            textTransform: "uppercase", color: tokens.color.text, textDecoration: "none",
+          }}
+        >CHAINGUARD.DEV</a>
       </div>
     </footer>
   );
 }
 
-function ChainguardLogo() {
-  return (
-    <svg viewBox="0 0 325 52" width={65} height={10} fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path fill="#fff" fillRule="evenodd" d="M44.35,28.13c.43-1.47.66-3.08.66-4.83C45.01,12.34,35.97,0,26.94,0S8.87,12.34,8.87,23.3c0,2.39.43,4.52,1.2,6.38l-5.43-.31c-2.21-.12-4.25,1.46-3.9,3.65.13.85.39,1.72.84,2.47-1.54,1.08-2.16,3.08-.92,4.64,1.25,1.57,3.08,3.01,5.6,3.01,2.73,0,4.38-.71,5.37-1.6.07.39.22.77.46,1.13,1.23,1.87,3.26,3.92,6.26,3.92,5.11,0,5.68-3.22,5.96-4.83.02-.13.04-.24.06-.35l3.41-1.71,3.41,1.71c.02.1.04.22.06.35.29,1.61.86,4.83,5.96,4.83,3,0,5.03-2.05,6.26-3.92.05-.07.09-.15.13-.22.96.42,2.24.69,3.93.69,2.52,0,4.35-1.44,5.6-3.01,1.53-1.92.23-4.49-2.11-5.22l-.77-.24c2.27-1.18,2.6-3.4,2.36-5.35-.27-2.2-2.67-3.15-4.76-2.42l-3.53,1.24ZM27.8,39.67h0,0s0,0,0,0Z" />
-      <path fill="#fff" d="M85.32,41.74c-10.37,0-17-6.75-17-18.64,0-11.24,7.48-18.14,17.35-18.14,8.52,0,14.66,4.9,15.55,13.19h-6.78c-.65-4.55-3.64-7.65-8.77-7.65-6.18,0-10.62,4.75-10.62,12.59s4.39,13.09,10.47,13.09c5.18,0,8.62-3.35,9.32-8h6.53c-.85,8.1-6.68,13.54-16.05,13.54ZM106.12,40.84V5.86h6.08v11.69c0,.7-.05,1.45-.2,2.4,1.35-2.45,3.64-4.3,7.48-4.3,5.38,0,8.57,3.8,8.57,9.8v15.39h-6.08v-14.49c0-3.6-1.74-5.85-4.59-5.85-2.99,0-5.18,2.65-5.18,6.05v14.29h-6.08ZM141.14,41.74c-4.24,0-8.38-2.8-8.38-7.6,0-5.5,4.24-7.4,9.47-8.1l3.49-.45c1.99-.25,2.69-1,2.69-2.2,0-1.7-1.4-3.2-3.99-3.2-2.84,0-4.64,1.6-4.89,4.15h-6.28c.4-5.1,4.54-8.7,10.82-8.7,7.43,0,10.42,4,10.42,10.84v14.34h-5.63v-1c0-.8.1-1.55.25-2.35-1.3,2.4-3.79,4.25-7.98,4.25ZM142.79,37.25c3.24,0,5.83-2.4,5.83-5.85v-2.65c-.55.5-1.4.75-2.89,1.05l-1.99.4c-2.84.55-4.79,1.5-4.79,3.7s1.7,3.35,3.84,3.35ZM160.45,40.84v-24.39h6.08v24.39h-6.08ZM160.3,12.76v-6.4h6.33v6.4h-6.33ZM172.82,40.84v-24.39h6.08v1.1c0,.7-.05,1.45-.2,2.4,1.35-2.45,3.64-4.3,7.48-4.3,5.38,0,8.57,3.8,8.57,9.8v15.39h-6.08v-14.49c0-3.6-1.75-5.85-4.59-5.85-2.99,0-5.18,2.65-5.18,6.05v14.29h-6.08ZM211.62,51.94c-7.18,0-11.27-3.85-11.27-9.4h6.18c.1,2.9,1.94,4.6,5.23,4.6s5.88-1.9,5.88-5.55v-2.65c0-1.1.05-2.1.2-3.05-1.45,2.2-3.79,4.05-7.58,4.05-6.33,0-10.92-4.45-10.92-12.14s5.28-12.14,10.62-12.14c4.29,0,6.43,1.75,7.88,4.3-.15-.85-.2-1.5-.2-2.4v-1.1h6.08v23.64c0,8-4.94,11.84-12.11,11.84ZM211.82,35.1c3.59,0,6.18-3.05,6.18-7.3s-2.59-7.3-6.18-7.3-6.28,3.05-6.28,7.3,2.59,7.3,6.28,7.3ZM238.44,41.74c-4.89,0-8.72-3.35-8.72-9.8v-15.49h6.13v14.54c0,3.4,1.49,5.85,4.44,5.85,3.09,0,5.28-2.3,5.28-5.9v-14.49h6.08v24.39h-6.03v-1c0-.75.1-1.6.25-2.35-1.25,2.35-3.39,4.25-7.43,4.25ZM264.99,41.74c-4.24,0-8.37-2.8-8.37-7.6,0-5.5,4.24-7.4,9.47-8.1l3.49-.45c1.99-.25,2.69-1,2.69-2.2,0-1.7-1.4-3.2-3.99-3.2-2.84,0-4.64,1.6-4.89,4.15h-6.28c.4-5.1,4.54-8.7,10.82-8.7,7.43,0,10.42,4,10.42,10.84v14.34h-5.63v-1c0-.8.1-1.55.25-2.35-1.3,2.4-3.79,4.25-7.98,4.25ZM266.63,37.25c3.24,0,5.83-2.4,5.83-5.85v-2.65c-.55.5-1.4.75-2.89,1.05l-1.99.4c-2.84.55-4.79,1.5-4.79,3.7s1.7,3.35,3.84,3.35ZM284.29,40.84v-24.39h6.08v1.85c0,.9-.05,1.65-.2,2.55,1.3-2.75,3.49-5.2,7.13-5.2.5,0,.9.05,1.3.15v5.9c-.4-.1-.95-.2-1.75-.2-3.74,0-6.48,1.9-6.48,7.25v12.09h-6.08ZM311.49,41.74c-6.43,0-11.12-4.4-11.12-12.99s5.53-13.09,11.22-13.09c3.79,0,6.13,1.95,7.53,4.3-.2-.9-.2-1.65-.2-2.4V5.86h6.08v34.98h-6.08v-1c0-.85,0-1.5.2-2.35-.95,1.8-3.14,4.25-7.63,4.25ZM312.93,36.95c3.64,0,6.33-3.35,6.33-8.25s-2.69-8.2-6.33-8.2-6.38,3.35-6.38,8.2,2.74,8.25,6.38,8.25Z" />
-    </svg>
-  );
-}
-
 // ============================================================================
-// LOADING PHASE
+// LOADING
 // ============================================================================
 function LoadingOverlay({ onComplete }) {
   const [pct, setPct] = useState(0);
@@ -923,12 +878,9 @@ function LoadingOverlay({ onComplete }) {
   const clipY = rectH - fillH;
 
   return (
-    <div style={{
-      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-      flex: 1,
-    }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1 }}>
       <div style={{ width: "80%", maxWidth: 380 }}>
-        <svg viewBox="0 0 1036 223" width="100%" fill="none">
+        <svg viewBox="0 0 1036 223" width="100%" fill="none" aria-label="Loading Malwhere">
           <defs>
             <clipPath id="fillClip"><rect x={0} y={clipY} width={rectW} height={fillH} /></clipPath>
           </defs>
@@ -945,43 +897,43 @@ function LoadingOverlay({ onComplete }) {
           )}
         </svg>
       </div>
-      <div style={{
-        marginTop: 32, fontFamily: tokens.font.mono, fontWeight: 600,
-        fontSize: 13, letterSpacing: "0.08em", color: tokens.color.textMuted, textAlign: "center",
-      }}>{pct}%</div>
+      <div
+        style={{
+          marginTop: 32, fontFamily: tokens.font.mono, fontWeight: 600,
+          fontSize: 13, letterSpacing: "0.08em", color: tokens.color.textMuted, textAlign: "center",
+        }}
+        aria-live="polite"
+      >{pct}%</div>
     </div>
   );
 }
 
 // ============================================================================
-// ONBOARDING
+// ONBOARDING — Interactive demo
 // ============================================================================
-function InteractiveDemo({ stepKey }) {
-  // 3-row × 4-col grid: B U G X / I O D E / L C A P
-  // CODE path: C(2,1) -> O(1,1) -> D(1,2) -> E(1,3)
-  const GRID = [["B","U","G","X"],["I","O","D","E"],["L","C","A","P"]];
-  const TARGET_PATH = [[2,1],[1,1],[1,2],[1,3]];
-  const TARGET_KEYS = useMemo(() => new Set(TARGET_PATH.map(([r, c]) => `${r},${c}`)), []);
-  const CELL_SIZE = 50;
-  const GRID_W = 4 * CELL_SIZE;
-  const GRID_H = 3 * CELL_SIZE;
+const DEMO_GRID = [["B","U","G","X"],["I","O","D","E"],["L","C","A","P"]];
+const DEMO_TARGET_PATH = [[2,1],[1,1],[1,2],[1,3]]; // C-O-D-E
+const DEMO_CELL = 50;
+const DEMO_GRID_W = 4 * DEMO_CELL;
+const DEMO_GRID_H = 3 * DEMO_CELL;
 
+function InteractiveDemo({ stepKey }) {
   const [selectedPath, setSelectedPath] = useState([]);
   const [hoverCell, setHoverCell] = useState(null);
   const [cursorPos, setCursorPos] = useState({ x: 0, y: 0, visible: false });
   const [cursorPressed, setCursorPressed] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [gestureLabel, setGestureLabel] = useState(""); // "TAP" or "DRAG"
+  const [gestureLabel, setGestureLabel] = useState("");
   const [userInteracted, setUserInteracted] = useState(false);
   const [isDraggingUser, setIsDraggingUser] = useState(false);
   const [solved, setSolved] = useState(false);
   const [hopTrigger, setHopTrigger] = useState(0);
   const timersRef = useRef([]);
   const svgRef = useRef(null);
+  const { isSyntheticMouseAfterTouch, cellFromEvent } = usePointerCells(svgRef, 3, 4);
 
   const cellCenter = useCallback((row, col) => ({
-    x: col * CELL_SIZE + CELL_SIZE / 2,
-    y: row * CELL_SIZE + CELL_SIZE / 2,
+    x: col * DEMO_CELL + DEMO_CELL / 2,
+    y: row * DEMO_CELL + DEMO_CELL / 2,
   }), []);
 
   const clearTimers = useCallback(() => {
@@ -989,129 +941,80 @@ function InteractiveDemo({ stepKey }) {
     timersRef.current = [];
   }, []);
 
+  const scheduleDemo = useCallback((ms, fn) => {
+    const id = setTimeout(fn, ms);
+    timersRef.current.push(id);
+  }, []);
+
   const runDemo = useCallback(() => {
     clearTimers();
     setSelectedPath([]);
     setHoverCell(null);
     setCursorPressed(false);
-    setIsDragging(false);
     setGestureLabel("");
 
-    const c = cellCenter(TARGET_PATH[0][0], TARGET_PATH[0][1]); // C at (2,1)
-    const o = cellCenter(TARGET_PATH[1][0], TARGET_PATH[1][1]); // O at (1,1)
+    const c = cellCenter(DEMO_TARGET_PATH[0][0], DEMO_TARGET_PATH[0][1]);
+    const o = cellCenter(DEMO_TARGET_PATH[1][0], DEMO_TARGET_PATH[1][1]);
+    const startPos = { x: c.x - 45, y: c.y + 45 };
 
-    setCursorPos({ x: c.x - 50, y: c.y + 50, visible: false });
+    setCursorPos({ x: startPos.x, y: startPos.y, visible: false });
 
-    // --- TAP DEMO ---
-    timersRef.current.push(setTimeout(() => {
+    // TAP DEMO
+    scheduleDemo(300, () => {
       setGestureLabel("TAP");
-      setCursorPos({ x: c.x - 50, y: c.y + 50, visible: true });
-    }, 300));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPos({ x: c.x, y: c.y, visible: true });
-    }, 600));
-
-    timersRef.current.push(setTimeout(() => {
-      setHoverCell(`${TARGET_PATH[0][0]},${TARGET_PATH[0][1]}`);
-    }, 950));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPressed(true);
-    }, 1250));
-
-    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: startPos.x, y: startPos.y, visible: true });
+    });
+    scheduleDemo(600, () => setCursorPos({ x: c.x, y: c.y, visible: true }));
+    scheduleDemo(1000, () => setHoverCell(`${DEMO_TARGET_PATH[0][0]},${DEMO_TARGET_PATH[0][1]}`));
+    scheduleDemo(1300, () => setCursorPressed(true));
+    scheduleDemo(1550, () => {
       setCursorPressed(false);
-      setSelectedPath([TARGET_PATH[0]]);
+      setSelectedPath([DEMO_TARGET_PATH[0]]);
       setHoverCell(null);
-    }, 1500));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPos({ x: o.x, y: o.y, visible: true });
-    }, 1950));
-
-    timersRef.current.push(setTimeout(() => {
-      setHoverCell(`${TARGET_PATH[1][0]},${TARGET_PATH[1][1]}`);
-    }, 2300));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPressed(true);
-    }, 2600));
-
-    timersRef.current.push(setTimeout(() => {
+    });
+    scheduleDemo(1950, () => setCursorPos({ x: o.x, y: o.y, visible: true }));
+    scheduleDemo(2350, () => setHoverCell(`${DEMO_TARGET_PATH[1][0]},${DEMO_TARGET_PATH[1][1]}`));
+    scheduleDemo(2600, () => setCursorPressed(true));
+    scheduleDemo(2850, () => {
       setCursorPressed(false);
-      setSelectedPath([TARGET_PATH[0], TARGET_PATH[1]]);
+      setSelectedPath([DEMO_TARGET_PATH[0], DEMO_TARGET_PATH[1]]);
       setHoverCell(null);
-    }, 2850));
-
-    timersRef.current.push(setTimeout(() => {
-      setSelectedPath([]);
-      setCursorPos((p) => ({ ...p, visible: false }));
+    });
+    scheduleDemo(3700, () => {
       setGestureLabel("");
-    }, 3700));
+      setSelectedPath([]);
+    });
+    scheduleDemo(3900, () => setCursorPos((p) => ({ ...p, visible: false })));
 
-    // --- DRAG DEMO ---
-    timersRef.current.push(setTimeout(() => {
+    // DRAG DEMO
+    scheduleDemo(4400, () => {
       setGestureLabel("DRAG");
-      setCursorPos({ x: c.x - 50, y: c.y + 50, visible: true });
-    }, 4100));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPos({ x: c.x, y: c.y, visible: true });
-    }, 4400));
-
-    timersRef.current.push(setTimeout(() => {
-      setHoverCell(`${TARGET_PATH[0][0]},${TARGET_PATH[0][1]}`);
-    }, 4750));
-
-    timersRef.current.push(setTimeout(() => {
+      setCursorPos({ x: startPos.x, y: startPos.y, visible: true });
+    });
+    scheduleDemo(4700, () => setCursorPos({ x: c.x, y: c.y, visible: true }));
+    scheduleDemo(5100, () => setHoverCell(`${DEMO_TARGET_PATH[0][0]},${DEMO_TARGET_PATH[0][1]}`));
+    scheduleDemo(5400, () => {
       setCursorPressed(true);
-      setIsDragging(true);
-      setSelectedPath([TARGET_PATH[0]]);
+      setSelectedPath([DEMO_TARGET_PATH[0]]);
       setHoverCell(null);
-    }, 5050));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPos({ x: o.x, y: o.y, visible: true });
-    }, 5400));
-
-    timersRef.current.push(setTimeout(() => {
-      setSelectedPath([TARGET_PATH[0], TARGET_PATH[1]]);
-    }, 5750));
-
-    timersRef.current.push(setTimeout(() => {
-      setCursorPressed(false);
-      setIsDragging(false);
-    }, 6200));
-
-    timersRef.current.push(setTimeout(() => {
-      setSelectedPath([]);
-      setHoverCell(null);
-      setCursorPos((p) => ({ ...p, visible: false }));
+    });
+    scheduleDemo(5700, () => setCursorPos({ x: o.x, y: o.y, visible: true }));
+    scheduleDemo(5950, () => setSelectedPath([DEMO_TARGET_PATH[0], DEMO_TARGET_PATH[1]]));
+    scheduleDemo(6400, () => setCursorPressed(false));
+    scheduleDemo(7100, () => {
       setGestureLabel("");
-    }, 7000));
+      setSelectedPath([]);
+    });
+    scheduleDemo(7300, () => setCursorPos((p) => ({ ...p, visible: false })));
 
-    // Longer gap — gives user time to try it themselves before loop restarts
-    timersRef.current.push(setTimeout(() => {
-      runDemo();
-    }, 10500));
-  }, [cellCenter, clearTimers]);
+    scheduleDemo(10800, runDemo);
+  }, [cellCenter, clearTimers, scheduleDemo]);
 
   useEffect(() => {
     if (userInteracted) return;
     runDemo();
     return clearTimers;
   }, [stepKey, userInteracted, runDemo, clearTimers]);
-
-  const coordFromPointer = useCallback((clientX, clientY) => {
-    const svg = svgRef.current;
-    if (!svg) return null;
-    const rect = svg.getBoundingClientRect();
-    const col = Math.floor(((clientX - rect.left) / rect.width) * 4);
-    const row = Math.floor(((clientY - rect.top) / rect.height) * 3);
-    if (row < 0 || row >= 3 || col < 0 || col >= 4) return null;
-    return [row, col];
-  }, []);
 
   const takeOver = useCallback(() => {
     if (userInteracted) return;
@@ -1123,13 +1026,9 @@ function InteractiveDemo({ stepKey }) {
     setHoverCell(null);
   }, [userInteracted, clearTimers]);
 
-  // Check if selection forms CODE (forward or reversed)
   const checkSolved = useCallback((path) => {
-    if (path.length !== TARGET_PATH.length) return false;
-    const fwd = path.map(([r, c]) => `${r},${c}`).join("|");
-    const targetFwd = TARGET_PATH.map(([r, c]) => `${r},${c}`).join("|");
-    const targetRev = [...TARGET_PATH].reverse().map(([r, c]) => `${r},${c}`).join("|");
-    return fwd === targetFwd || fwd === targetRev;
+    if (path.length !== DEMO_TARGET_PATH.length) return false;
+    return pathsEqualEitherDir(path, DEMO_TARGET_PATH);
   }, []);
 
   const triggerSolve = useCallback(() => {
@@ -1144,42 +1043,39 @@ function InteractiveDemo({ stepKey }) {
   }, []);
 
   const handlePointerDown = useCallback((e) => {
+    if (isSyntheticMouseAfterTouch(e)) return;
     e.preventDefault();
     takeOver();
     if (solved) {
       resetUserDemo();
       return;
     }
-    const point = e.touches ? e.touches[0] : e;
-    const cell = coordFromPointer(point.clientX, point.clientY);
+    const cell = cellFromEvent(e);
     if (!cell) return;
     setIsDraggingUser(true);
     setSelectedPath((prev) => {
       if (prev.length === 0) return [cell];
       const last = prev[prev.length - 1];
       if (last[0] === cell[0] && last[1] === cell[1]) {
-        // Tapping last cell — submit if it matches CODE
-        if (checkSolved(prev)) {
-          setTimeout(() => triggerSolve(), 50);
-        }
+        if (checkSolved(prev)) setTimeout(triggerSolve, 50);
         return prev;
       }
       const existingIdx = prev.findIndex(([r, c]) => r === cell[0] && c === cell[1]);
       if (existingIdx >= 0) return prev.slice(0, existingIdx + 1);
       if (isAdjacent(last, cell)) {
         const next = [...prev, cell];
-        if (checkSolved(next)) setTimeout(() => triggerSolve(), 50);
+        if (checkSolved(next)) setTimeout(triggerSolve, 50);
         return next;
       }
       return [cell];
     });
-  }, [takeOver, solved, resetUserDemo, coordFromPointer, checkSolved, triggerSolve]);
+  }, [isSyntheticMouseAfterTouch, cellFromEvent, takeOver, solved, resetUserDemo, checkSolved, triggerSolve]);
 
   const handlePointerMove = useCallback((e) => {
     if (!isDraggingUser || solved) return;
+    if (isSyntheticMouseAfterTouch(e)) return;
     e.preventDefault();
-    const point = e.touches ? e.touches[0] : e;
-    const cell = coordFromPointer(point.clientX, point.clientY);
+    const cell = cellFromEvent(e);
     if (!cell) return;
     setSelectedPath((prev) => {
       if (prev.length === 0) return [cell];
@@ -1192,22 +1088,22 @@ function InteractiveDemo({ stepKey }) {
       if (prev.some(([r, c]) => r === cell[0] && c === cell[1])) return prev;
       if (!isAdjacent(last, cell)) return prev;
       const next = [...prev, cell];
-      if (checkSolved(next)) setTimeout(() => triggerSolve(), 50);
+      if (checkSolved(next)) setTimeout(triggerSolve, 50);
       return next;
     });
-  }, [isDraggingUser, solved, coordFromPointer, checkSolved, triggerSolve]);
+  }, [isDraggingUser, solved, isSyntheticMouseAfterTouch, cellFromEvent, checkSolved, triggerSolve]);
 
-  const handlePointerUp = useCallback(() => {
-    setIsDraggingUser(false);
-  }, []);
+  const handlePointerUp = useCallback(() => setIsDraggingUser(false), []);
 
   useEffect(() => {
     if (!isDraggingUser) return;
     window.addEventListener("mouseup", handlePointerUp);
     window.addEventListener("touchend", handlePointerUp);
+    window.addEventListener("touchcancel", handlePointerUp);
     return () => {
       window.removeEventListener("mouseup", handlePointerUp);
       window.removeEventListener("touchend", handlePointerUp);
+      window.removeEventListener("touchcancel", handlePointerUp);
     };
   }, [isDraggingUser, handlePointerUp]);
 
@@ -1219,67 +1115,20 @@ function InteractiveDemo({ stepKey }) {
     }).join(" ");
   }, [selectedPath, cellCenter]);
 
-  const selectedSet = useMemo(() => {
-    const s = new Set();
-    selectedPath.forEach(([r, c]) => s.add(`${r},${c}`));
-    return s;
-  }, [selectedPath]);
+  const selectedSet = useMemo(
+    () => new Set(selectedPath.map(([r, c]) => `${r},${c}`)),
+    [selectedPath]
+  );
 
-  const selectionFillPath = useMemo(() => {
-    if (selectedPath.length === 0) return "";
-    // Build unified perimeter path around the whole word — matches main app approach
-    const cellSet = new Set(selectedPath.map(([r, c]) => `${r},${c}`));
-    const edges = [];
-    for (const [r, c] of selectedPath) {
-      const x1 = c * CELL_SIZE, y1 = r * CELL_SIZE;
-      const x2 = (c + 1) * CELL_SIZE, y2 = (r + 1) * CELL_SIZE;
-      if (!cellSet.has(`${r - 1},${c}`)) edges.push([x1, y1, x2, y1]);
-      if (!cellSet.has(`${r},${c + 1}`)) edges.push([x2, y1, x2, y2]);
-      if (!cellSet.has(`${r + 1},${c}`)) edges.push([x2, y2, x1, y2]);
-      if (!cellSet.has(`${r},${c - 1}`)) edges.push([x1, y2, x1, y1]);
-    }
-    const paths = [];
-    const used = new Set();
-    for (let i = 0; i < edges.length; i++) {
-      if (used.has(i)) continue;
-      const loop = [edges[i]];
-      used.add(i);
-      while (true) {
-        const last = loop[loop.length - 1];
-        const endX = last[2], endY = last[3];
-        let found = -1;
-        for (let j = 0; j < edges.length; j++) {
-          if (used.has(j)) continue;
-          if (edges[j][0] === endX && edges[j][1] === endY) { found = j; break; }
-        }
-        if (found === -1) break;
-        loop.push(edges[found]);
-        used.add(found);
-      }
-      if (loop.length) {
-        const points = [[loop[0][0], loop[0][1]]];
-        for (const [, , x2, y2] of loop) points.push([x2, y2]);
-        const simplified = [points[0]];
-        for (let k = 1; k < points.length - 1; k++) {
-          const [px, py] = simplified[simplified.length - 1];
-          const [cx, cy] = points[k];
-          const [nx, ny] = points[k + 1];
-          if ((cx - px) * (ny - cy) - (cy - py) * (nx - cx) !== 0) simplified.push(points[k]);
-        }
-        let d = `M${simplified[0][0]} ${simplified[0][1]}`;
-        for (let k = 1; k < simplified.length; k++) d += `L${simplified[k][0]} ${simplified[k][1]}`;
-        d += "Z";
-        paths.push(d);
-      }
-    }
-    return paths.join(" ");
-  }, [selectedPath]);
+  const selectionFillPath = useMemo(
+    () => computeWordPerimeterPath(selectedPath, DEMO_CELL),
+    [selectedPath]
+  );
 
-  const accentColor = tokens.color.spangram; // green for CODE demo
+  const accentColor = tokens.color.spangram;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14, width: "100%" }}>
-      {/* Prominent instruction */}
       <div style={{
         fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
         letterSpacing: "-0.01em", color: tokens.color.white, textAlign: "center",
@@ -1294,22 +1143,32 @@ function InteractiveDemo({ stepKey }) {
         }}>CODE</span>
       </div>
 
-      {/* Gesture label / solved message */}
-      <div style={{
-        height: 14,
-        fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
-        letterSpacing: "0.14em", textTransform: "uppercase",
-        color: accentColor,
-        opacity: (gestureLabel || solved) ? 1 : 0,
-        transition: "opacity 0.25s ease",
-      }}>{solved ? "Solved — tap to try again" : (gestureLabel || "\u00A0")}</div>
+      {/* Gesture label slot */}
+      <div style={{ height: 14, position: "relative", width: "100%", display: "flex", justifyContent: "center" }}>
+        {["TAP", "DRAG", "SOLVED"].map((label) => {
+          const visible = solved ? label === "SOLVED" : gestureLabel === label;
+          const displayText = label === "SOLVED" ? "Solved — tap to try again" : label;
+          return (
+            <div key={label} style={{
+              position: "absolute",
+              fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
+              letterSpacing: "0.14em", textTransform: "uppercase",
+              color: accentColor,
+              opacity: visible ? 1 : 0,
+              transition: "opacity 0.3s ease",
+              pointerEvents: "none",
+              whiteSpace: "nowrap",
+            }}>{displayText}</div>
+          );
+        })}
+      </div>
 
-      {/* Grid */}
       <div style={{ position: "relative", padding: "8px 40px 12px" }}>
         <svg
           ref={svgRef}
-          width={GRID_W} height={GRID_H}
-          viewBox={`0 0 ${GRID_W} ${GRID_H}`}
+          width={DEMO_GRID_W}
+          height={DEMO_GRID_H}
+          viewBox={`0 0 ${DEMO_GRID_W} ${DEMO_GRID_H}`}
           style={{ display: "block", touchAction: "none", userSelect: "none", cursor: "pointer", overflow: "visible" }}
           onMouseDown={handlePointerDown}
           onMouseMove={handlePointerMove}
@@ -1317,7 +1176,6 @@ function InteractiveDemo({ stepKey }) {
           onTouchMove={handlePointerMove}
           onMouseEnter={takeOver}
         >
-          {/* Solved state — unified fill like main app */}
           {solved && (
             <path
               d={selectionFillPath}
@@ -1329,58 +1187,45 @@ function InteractiveDemo({ stepKey }) {
             />
           )}
 
-          {/* In-progress selection fill (soft) */}
           {!solved && selectionFillPath && (
-            <path d={selectionFillPath} fill="rgba(98,38,251,0.08)" />
+            <>
+              <path d={selectionFillPath} fill="rgba(98,38,251,0.08)" />
+              <path
+                d={selectionFillPath}
+                fill="none"
+                stroke={`${tokens.color.accent}55`}
+                strokeWidth={1.5}
+                strokeDasharray="3,3"
+              />
+            </>
           )}
 
-          {/* Dashed outline on in-progress selection */}
-          {!solved && selectionFillPath && (
-            <path
-              d={selectionFillPath}
-              fill="none"
-              stroke={`${tokens.color.accent}55`}
-              strokeWidth={1.5}
-              strokeDasharray="3,3"
-            />
-          )}
-
-          {/* Cells */}
-          {GRID.map((row, r) => row.map((letter, c) => {
+          {DEMO_GRID.map((row, r) => row.map((letter, c) => {
             const key = `${r},${c}`;
             const selected = selectedSet.has(key);
             const isHover = hoverCell === key && !selected;
             const center = cellCenter(r, c);
-            const x = c * CELL_SIZE;
-            const y = r * CELL_SIZE;
-            const pathIdx = TARGET_PATH.findIndex(([tr, tc]) => tr === r && tc === c);
+            const x = c * DEMO_CELL;
+            const y = r * DEMO_CELL;
+            const pathIdx = DEMO_TARGET_PATH.findIndex(([tr, tc]) => tr === r && tc === c);
 
             let cellFill = "transparent";
             let letterColor = tokens.color.textMuted;
-            if (solved && selected) {
-              letterColor = tokens.color.white;
-            } else if (selected) {
-              letterColor = tokens.color.text;
-            } else if (isHover) {
+            if (solved && selected) letterColor = tokens.color.white;
+            else if (selected) letterColor = tokens.color.text;
+            else if (isHover) {
               cellFill = "rgba(255,255,255,0.03)";
               letterColor = "rgba(228,233,239,0.82)";
             }
 
             return (
-              <g key={key}
-                onMouseEnter={() => {
-                  if (userInteracted && !isDraggingUser && !solved) setHoverCell(key);
-                }}
-                onMouseLeave={() => {
-                  if (userInteracted) setHoverCell((h) => (h === key ? null : h));
-                }}
+              <g
+                key={key}
+                onMouseEnter={userInteracted && !isDraggingUser && !solved ? () => setHoverCell(key) : undefined}
+                onMouseLeave={userInteracted ? () => setHoverCell((h) => (h === key ? null : h)) : undefined}
               >
-                <rect
-                  x={x} y={y}
-                  width={CELL_SIZE} height={CELL_SIZE}
-                  fill={cellFill}
-                  style={{ transition: "fill 0.18s ease" }}
-                />
+                <rect x={x} y={y} width={DEMO_CELL} height={DEMO_CELL} fill={cellFill}
+                  style={{ transition: "fill 0.18s ease" }} />
                 <g style={{
                   transformOrigin: `${center.x}px ${center.y}px`,
                   animation: solved && selected && hopTrigger > 0
@@ -1388,7 +1233,8 @@ function InteractiveDemo({ stepKey }) {
                     : undefined,
                 }}>
                   <text
-                    x={center.x} y={center.y}
+                    x={center.x}
+                    y={center.y}
                     textAnchor="middle"
                     dominantBaseline="central"
                     style={{
@@ -1407,7 +1253,6 @@ function InteractiveDemo({ stepKey }) {
             );
           }))}
 
-          {/* Drag polyline */}
           {!solved && pathString && (
             <polyline
               points={pathString}
@@ -1420,24 +1265,21 @@ function InteractiveDemo({ stepKey }) {
             />
           )}
 
-          {/* Classic pointing-hand cursor — fingertip anchored near (0,0) */}
+          {/* Demo cursor */}
           <g style={{
             transform: `translate(${cursorPos.x}px, ${cursorPos.y}px)`,
             opacity: cursorPos.visible ? 1 : 0,
             transition: `transform 0.4s ${tokens.ease}, opacity 0.25s ease`,
             pointerEvents: "none",
           }}>
-            {/* Expanding press ripple */}
             {cursorPressed && (
               <circle cx={0} cy={0} r={0} fill="none" stroke={accentColor} strokeWidth={2.5}
                 style={{ animation: "demoCursorRipple 0.8s ease-out" }} />
             )}
-            {/* Persistent pulsing halo while hovering */}
             {!cursorPressed && cursorPos.visible && (
               <circle cx={0} cy={0} r={18} fill="none" stroke={accentColor} strokeWidth={1.5} opacity={0.4}
                 style={{ animation: "demoHoverPulse 1.6s ease-in-out infinite" }} />
             )}
-            {/* Pixel-style pointer hand, scaled and offset so fingertip aligns at (0,0) */}
             <g style={{
               transform: cursorPressed ? "scale(0.62)" : "scale(0.8)",
               transformOrigin: "18px 0px",
@@ -1445,10 +1287,8 @@ function InteractiveDemo({ stepKey }) {
               filter: `drop-shadow(0 2px 4px rgba(0,0,0,0.6)) drop-shadow(0 0 6px ${accentColor}77)`,
             }}>
               <g transform="translate(-18, 0)">
-                {/* Black outline layer */}
                 <path d="M15.2941 0H21.4118V3.05882H24.4706V15.2941H30.5882V18.3529H39.7647V21.4118H45.8824V24.4706H48.9412V27.5294H52V48.9412H48.9412V58.1176H45.8824V67.2941H15.2941V58.1176H12.2353V52H9.17647V45.8824H6.11765V39.7647H3.05882V36.7059H0V27.5294H9.17647V30.5882H12.2353V3.05882H15.2941"
                   fill={tokens.color.bg} />
-                {/* White fill layer */}
                 <path d="M21.4118 3.05884V30.5883H24.4706V18.353H30.5883V30.5883H33.6471V21.4118H39.7647V33.6471H42.8235V24.4706H45.8824V27.5294H48.9412V48.9412H45.8824V58.1177H42.8235V64.2353H18.353V58.1177H15.2941V52H12.2353V45.8824H9.17649V39.7647H6.11766V36.7059H3.05884V30.5883H9.17649V33.6471H12.2353V36.7059H15.2941V3.05884"
                   fill={tokens.color.white} />
               </g>
@@ -1460,66 +1300,67 @@ function InteractiveDemo({ stepKey }) {
   );
 }
 
+// ============================================================================
+// ONBOARDING PANEL
+// ============================================================================
+const ONBOARDING_STEPS = [
+  {
+    title: "How to play", sub: null,
+    pts: ["Drag or tap letters to form words", "Words can snake in any direction", "Every letter is used exactly once", "Stuck? Tap \u201CScan\u201D to reveal a word"],
+    demo: "interactive",
+  },
+  {
+    title: "Find the Missing Link", sub: null,
+    pts: ["The Missing Link reveals the theme", "It connects opposite sides of the board", "It ties all the attacks together"],
+    demo: "link",
+  },
+  { title: null, isThemeReveal: true },
+];
+
 function Onboarding({ onClose }) {
   const [step, setStep] = useState(0);
-  const slides = [
-    { title: "How to play", sub: null,
-      pts: ["Drag or tap letters to form words", "Words can snake in any direction", "Every letter is used exactly once", "Stuck? Tap \u201CScan\u201D to reveal a word"],
-      demo: "interactive" },
-    { title: "Find the Missing Link", sub: null,
-      pts: ["The Missing Link reveals the theme", "It connects opposite sides of the board", "It ties all the attacks together"],
-      demo: "link" },
-    { title: null, isThemeReveal: true },
-  ];
-  const slide = slides[step];
+  const slide = ONBOARDING_STEPS[step];
+  const total = ONBOARDING_STEPS.length;
 
-  const demoCell = (letter, state, key, delay) => {
-    const styleMap = {
-      def: { bg: "transparent", bd: "transparent", co: "rgba(228,233,239,0.3)" },
-      found: { bg: tokens.color.accent, bd: tokens.color.accent, co: tokens.color.white },
-      link: { bg: tokens.color.spangram, bd: tokens.color.spangram, co: tokens.color.bg },
+  // Keyboard support
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowRight" && step < total - 1) setStep(step + 1);
+      else if (e.key === "ArrowLeft" && step > 0) setStep(step - 1);
     };
-    const s = styleMap[state] || styleMap.def;
-    return (
-      <div key={key} style={{
-        width: 50, height: 50, display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: tokens.font.display, fontWeight: 700, fontSize: 17,
-        background: s.bg, border: `1px solid ${s.bd}`, color: s.co,
-        animation: delay != null ? `obCellIn 0.25s ${delay}s both` : "none",
-      }}>{letter}</div>
-    );
-  };
-
-  const demoGrid = (rows, stateFn) => (
-    <div style={{
-      display: "inline-grid",
-      gridTemplateColumns: `repeat(${rows[0].length}, 50px)`,
-      gap: 0,
-    }}>
-      {rows.flatMap((row, r) => row.map((l, c) => {
-        const state = stateFn(r, c);
-        const idx = r * rows[0].length + c;
-        return demoCell(l, state, `${step}-${r}-${c}`, state !== "def" ? 0.15 + idx * 0.09 : null);
-      }))}
-    </div>
-  );
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [step, total, onClose]);
 
   return (
-    <div style={{
-      flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
-    }}>
-      <div style={{
-        background: tokens.color.surface, border: `1px solid ${tokens.color.border}`,
-        padding: "28px 28px 24px", maxWidth: 340, width: "100%",
-        boxShadow: "0 24px 80px -12px rgba(0,0,0,0.7)", position: "relative",
-        animation: `cardIn 0.45s ${tokens.ease}`,
-      }}>
-        <button onClick={onClose} style={{
-          position: "absolute", top: 14, right: 14, background: "none", border: "none",
-          cursor: "pointer", color: tokens.color.textFaint, padding: 4,
-        }} aria-label="Skip onboarding">
-          <CloseIcon />
-        </button>
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="onboarding-title"
+        style={{
+          background: tokens.color.surface,
+          border: `1px solid ${tokens.color.border}`,
+          padding: "28px 28px 24px",
+          maxWidth: 340,
+          width: "100%",
+          boxShadow: "0 24px 80px -12px rgba(0,0,0,0.7)",
+          position: "relative",
+          animation: `cardIn 0.45s ${tokens.ease}`,
+        }}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Skip onboarding"
+          style={{
+            position: "absolute", top: 14, right: 14,
+            background: "none", border: "none",
+            cursor: "pointer", color: tokens.color.textFaint, padding: 4,
+          }}
+        ><CloseIcon /></button>
+
         {slide.isThemeReveal ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "18px 0 6px" }}>
             <div style={{
@@ -1533,10 +1374,13 @@ function Onboarding({ onClose }) {
               border: "1px solid rgba(98,38,251,0.2)", borderRadius: 3,
               textAlign: "center", animation: "themeGlow 2.5s ease-in-out infinite",
             }}>
-              <div style={{
-                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 19,
-                letterSpacing: "-0.02em", color: tokens.color.white, lineHeight: 1.2,
-              }}>Supply chain attacks</div>
+              <div
+                id="onboarding-title"
+                style={{
+                  fontFamily: tokens.font.display, fontWeight: 700, fontSize: 19,
+                  letterSpacing: "-0.02em", color: tokens.color.white, lineHeight: 1.2,
+                }}
+              >Supply chain attacks</div>
             </div>
             <div style={{
               fontFamily: tokens.font.body, fontWeight: 400, fontSize: 12,
@@ -1545,11 +1389,14 @@ function Onboarding({ onClose }) {
           </div>
         ) : (
           <>
-            <div style={{
-              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 20,
-              letterSpacing: "-0.03em", color: tokens.color.white, lineHeight: 1.1,
-              marginBottom: slide.sub ? 5 : 0,
-            }}>{slide.title}</div>
+            <div
+              id="onboarding-title"
+              style={{
+                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 20,
+                letterSpacing: "-0.03em", color: tokens.color.white, lineHeight: 1.1,
+                marginBottom: slide.sub ? 5 : 0,
+              }}
+            >{slide.title}</div>
             {slide.sub && <div style={{
               fontFamily: tokens.font.body, fontWeight: 400, fontSize: 12,
               color: tokens.color.textFaint, letterSpacing: "-0.01em",
@@ -1577,10 +1424,23 @@ function Onboarding({ onClose }) {
                   padding: "20px 16px",
                   display: "flex", justifyContent: "center",
                 }}>
-                  {demoGrid(
-                    [["C","O","D","E"]],
-                    () => "link"
-                  )}
+                  <div style={{
+                    display: "inline-grid",
+                    gridTemplateColumns: "repeat(4, 50px)",
+                    gap: 0,
+                  }}>
+                    {["C","O","D","E"].map((l, i) => (
+                      <div key={i} style={{
+                        width: 50, height: 50,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontFamily: tokens.font.display, fontWeight: 700, fontSize: 17,
+                        background: tokens.color.spangram,
+                        border: `1px solid ${tokens.color.spangram}`,
+                        color: tokens.color.bg,
+                        animation: `obCellIn 0.25s ${0.15 + i * 0.09}s both`,
+                      }}>{l}</div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -1601,44 +1461,65 @@ function Onboarding({ onClose }) {
             </div>
           </>
         )}
+
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           marginTop: slide.isThemeReveal ? 28 : 0,
         }}>
-          <button onClick={() => step > 0 && setStep(step - 1)} style={{
-            background: "none", border: "none",
-            cursor: step > 0 ? "pointer" : "default",
-            fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
-            letterSpacing: "-0.01em",
-            color: step > 0 ? tokens.color.textMuted : "transparent",
-            padding: "8px 0", minWidth: 50, textAlign: "left",
-          }}>Back</button>
-          <div style={{ display: "flex", gap: 6 }}>
-            {[0,1,2].map((i) => (
-              <div key={i} style={{
-                width: i === step ? 16 : 5, height: 4,
-                background: i === step ? tokens.color.accent : tokens.color.borderSubtle,
-                transition: `all 0.3s ${tokens.ease}`,
-              }} />
+          <button
+            type="button"
+            onClick={() => step > 0 && setStep(step - 1)}
+            aria-label="Previous"
+            style={{
+              background: "none", border: "none",
+              cursor: step > 0 ? "pointer" : "default",
+              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
+              letterSpacing: "-0.01em",
+              color: step > 0 ? tokens.color.textMuted : "transparent",
+              padding: "8px 0", minWidth: 50, textAlign: "left",
+              visibility: step > 0 ? "visible" : "hidden",
+            }}
+          >Back</button>
+          <div style={{ display: "flex", gap: 6 }} role="tablist">
+            {ONBOARDING_STEPS.map((_, i) => (
+              <div
+                key={i}
+                role="tab"
+                aria-selected={i === step}
+                style={{
+                  width: i === step ? 16 : 5, height: 4,
+                  background: i === step ? tokens.color.accent : tokens.color.borderSubtle,
+                  transition: `all 0.3s ${tokens.ease}`,
+                }}
+              />
             ))}
           </div>
-          {step < 2 ? (
-            <button onClick={() => setStep(step + 1)} style={{
-              background: tokens.color.surfaceRaised, border: `1px solid ${tokens.color.border}`,
-              padding: "8px 16px", cursor: "pointer",
-              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
-              letterSpacing: "-0.01em", color: tokens.color.text,
-              display: "inline-flex", alignItems: "center", gap: 8,
-            }}>Next <ArrowIcon size={10} color={tokens.color.text} /></button>
+          {step < total - 1 ? (
+            <button
+              type="button"
+              onClick={() => setStep(step + 1)}
+              style={{
+                background: tokens.color.surfaceRaised,
+                border: `1px solid ${tokens.color.border}`,
+                padding: "8px 16px", cursor: "pointer",
+                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
+                letterSpacing: "-0.01em", color: tokens.color.text,
+                display: "inline-flex", alignItems: "center", gap: 8,
+              }}
+            >Next <ArrowIcon size={10} color={tokens.color.text} /></button>
           ) : (
-            <button onClick={onClose} style={{
-              background: tokens.color.accent, border: "none",
-              padding: "8px 20px", cursor: "pointer",
-              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
-              letterSpacing: "-0.01em", color: tokens.color.white,
-              display: "inline-flex", alignItems: "center", gap: 8,
-              boxShadow: `0 2px 12px ${tokens.color.accentGlow}`,
-            }}>Begin <ArrowIcon size={10} /></button>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                background: tokens.color.accent, border: "none",
+                padding: "8px 20px", cursor: "pointer",
+                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 13,
+                letterSpacing: "-0.01em", color: tokens.color.white,
+                display: "inline-flex", alignItems: "center", gap: 8,
+                boxShadow: `0 2px 12px ${tokens.color.accentGlow}`,
+              }}
+            >Begin <ArrowIcon size={10} /></button>
           )}
         </div>
       </div>
@@ -1660,8 +1541,8 @@ function AttackCard({ word, onClose }) {
       setTimeout(() => setStage(1), 80),
       setTimeout(() => setStage(2), 260),
       setTimeout(() => setStage(3), 440),
-      isSpangram && setTimeout(() => setStage(4), 650),
-      isSpangram && setTimeout(() => setStage(5), 900),
+      isSpangram ? setTimeout(() => setStage(4), 650) : null,
+      isSpangram ? setTimeout(() => setStage(5), 900) : null,
     ].filter(Boolean);
     return () => timers.forEach(clearTimeout);
   }, [isSpangram]);
@@ -1671,6 +1552,13 @@ function AttackCard({ word, onClose }) {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  // Lock body scroll while modal open
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   const fade = (delay) => ({
     opacity: stage >= 2 ? 1 : 0,
@@ -1706,23 +1594,37 @@ function AttackCard({ word, onClose }) {
       transition: `opacity 0.5s ${tokens.ease}, transform 0.5s ${tokens.ease}`,
     });
     return (
-      <div onClick={onClose} style={{
-        position: "fixed", inset: 0, zIndex: 100, padding: 20,
-        background: stage >= 1 ? "rgba(6,11,14,0.93)" : "rgba(6,11,14,0)",
-        backdropFilter: stage >= 1 ? "blur(32px)" : "blur(0px)",
-        WebkitBackdropFilter: stage >= 1 ? "blur(32px)" : "blur(0px)",
-        transition: "background 0.5s ease, backdrop-filter 0.5s ease",
-        display: "flex", alignItems: "center", justifyContent: "center",
-      }}>
-        <div onClick={(e) => e.stopPropagation()} style={{
-          background: tokens.color.surface, border: `1px solid ${tokens.color.spangram}15`,
-          padding: "32px 28px 32px", maxWidth: 480, width: "100%",
-          opacity: stage >= 1 ? 1 : 0,
-          transform: stage >= 1 ? "none" : "translateY(14px) scale(0.96)",
-          transition: `opacity 0.5s 0.05s ${tokens.ease}, transform 0.55s 0.05s ${tokens.ease}`,
-          boxShadow: `0 32px 100px -16px rgba(0,0,0,0.8), 0 0 60px -20px ${tokens.color.spangramGlow}`,
-          maxHeight: "85dvh", overflowY: "auto", overscrollBehavior: "contain",
-        }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="card-title-spangram"
+        onClick={onClose}
+        style={{
+          position: "fixed", inset: 0, zIndex: 100, padding: 20,
+          background: stage >= 1 ? "rgba(6,11,14,0.93)" : "rgba(6,11,14,0)",
+          backdropFilter: stage >= 1 ? "blur(32px)" : "blur(0px)",
+          WebkitBackdropFilter: stage >= 1 ? "blur(32px)" : "blur(0px)",
+          transition: "background 0.5s ease, backdrop-filter 0.5s ease",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          overscrollBehavior: "contain",
+        }}
+      >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            background: tokens.color.surface,
+            border: `1px solid ${tokens.color.spangram}15`,
+            padding: "32px 28px 32px",
+            maxWidth: 480,
+            width: "100%",
+            opacity: stage >= 1 ? 1 : 0,
+            transform: stage >= 1 ? "none" : "translateY(14px) scale(0.96)",
+            transition: `opacity 0.5s 0.05s ${tokens.ease}, transform 0.55s 0.05s ${tokens.ease}`,
+            boxShadow: `0 32px 100px -16px rgba(0,0,0,0.8), 0 0 60px -20px ${tokens.color.spangramGlow}`,
+            maxHeight: "85dvh", overflowY: "auto", overscrollBehavior: "contain",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
           <div style={mlw(2)}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
               <div style={{
@@ -1736,10 +1638,13 @@ function AttackCard({ word, onClose }) {
                 color: tokens.color.spangram,
               }}>MISSING LINK</span>
             </div>
-            <h2 style={{
-              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 26,
-              letterSpacing: "-0.04em", color: tokens.color.white, lineHeight: 1.1, margin: 0,
-            }}>Supply Chain</h2>
+            <h2
+              id="card-title-spangram"
+              style={{
+                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 26,
+                letterSpacing: "-0.04em", color: tokens.color.white, lineHeight: 1.1, margin: 0,
+              }}
+            >Supply Chain</h2>
           </div>
           <div style={{
             height: 1, marginTop: 22, marginBottom: 24,
@@ -1769,7 +1674,8 @@ function AttackCard({ word, onClose }) {
             }}>Open source is critical to how we all build, and it's essential to verify that what package you're consuming matches the expected source code bit-for-bit. Otherwise, you run the risk of introducing something malicious into your builds.</div>
           </div>
           <div style={{
-            ...mlw(5), background: `${tokens.color.spangram}08`,
+            ...mlw(5),
+            background: `${tokens.color.spangram}08`,
             border: `1px solid ${tokens.color.spangram}18`,
             padding: "20px 20px", marginBottom: 28, position: "relative", overflow: "hidden",
           }}>
@@ -1791,13 +1697,18 @@ function AttackCard({ word, onClose }) {
             }}>With every dependency built from source in an isolated environment, Chainguard Libraries act as the trust layer for your open source so you can build safely with AI</div>
           </div>
           <div style={mlw(5)}>
-            <button onClick={onClose} style={{
-              width: "100%", padding: "14px 0", background: tokens.color.spangram,
-              border: "none", color: tokens.color.bg,
-              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
-              letterSpacing: "-0.01em", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-            }}>Continue <ArrowIcon size={11} color={tokens.color.bg} /></button>
+            <button
+              type="button"
+              onClick={onClose}
+              style={{
+                width: "100%", padding: "14px 0",
+                background: tokens.color.spangram,
+                border: "none", color: tokens.color.bg,
+                fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
+                letterSpacing: "-0.01em", cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              }}
+            >Continue <ArrowIcon size={11} color={tokens.color.bg} /></button>
           </div>
         </div>
       </div>
@@ -1805,23 +1716,36 @@ function AttackCard({ word, onClose }) {
   }
 
   return (
-    <div onClick={onClose} style={{
-      position: "fixed", inset: 0, zIndex: 100, padding: 20,
-      background: stage >= 1 ? "rgba(13,22,28,0.85)" : "rgba(13,22,28,0)",
-      backdropFilter: stage >= 1 ? "blur(24px)" : "blur(0px)",
-      WebkitBackdropFilter: stage >= 1 ? "blur(24px)" : "blur(0px)",
-      transition: "background 0.3s ease, backdrop-filter 0.3s ease",
-      display: "flex", alignItems: "center", justifyContent: "center",
-    }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        background: tokens.color.surface, border: `1px solid ${tokens.color.border}`,
-        padding: "26px 24px 28px", maxWidth: 460, width: "100%",
-        opacity: stage >= 1 ? 1 : 0,
-        transform: stage >= 1 ? "none" : "translateY(12px) scale(0.97)",
-        transition: `opacity 0.35s ${tokens.ease}, transform 0.4s ${tokens.ease}`,
-        boxShadow: `0 24px 80px -12px rgba(0,0,0,0.7), 0 0 0 1px ${accent}0A`,
-        maxHeight: "80dvh", overflowY: "auto", overscrollBehavior: "contain",
-      }}>
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="card-title"
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100, padding: 20,
+        background: stage >= 1 ? "rgba(13,22,28,0.85)" : "rgba(13,22,28,0)",
+        backdropFilter: stage >= 1 ? "blur(24px)" : "blur(0px)",
+        WebkitBackdropFilter: stage >= 1 ? "blur(24px)" : "blur(0px)",
+        transition: "background 0.3s ease, backdrop-filter 0.3s ease",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        overscrollBehavior: "contain",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: tokens.color.surface,
+          border: `1px solid ${tokens.color.border}`,
+          padding: "26px 24px 28px",
+          maxWidth: 460, width: "100%",
+          opacity: stage >= 1 ? 1 : 0,
+          transform: stage >= 1 ? "none" : "translateY(12px) scale(0.97)",
+          transition: `opacity 0.35s ${tokens.ease}, transform 0.4s ${tokens.ease}`,
+          boxShadow: `0 24px 80px -12px rgba(0,0,0,0.7), 0 0 0 1px ${accent}0A`,
+          maxHeight: "80dvh", overflowY: "auto", overscrollBehavior: "contain",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
         <div style={{ ...fade(0), marginBottom: 20 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <div style={{
@@ -1839,10 +1763,13 @@ function AttackCard({ word, onClose }) {
               color: tokens.color.textFaint, letterSpacing: "0.02em", textTransform: "uppercase",
             }}>{word.card.date}</span>
           </div>
-          <h2 style={{
-            fontFamily: tokens.font.display, fontWeight: 700, fontSize: 26,
-            letterSpacing: "-0.04em", color: tokens.color.white, lineHeight: 1.1, margin: 0,
-          }}>{word.card.title}</h2>
+          <h2
+            id="card-title"
+            style={{
+              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 26,
+              letterSpacing: "-0.04em", color: tokens.color.white, lineHeight: 1.1, margin: 0,
+            }}
+          >{word.card.title}</h2>
         </div>
         <div style={{
           height: 1, marginBottom: 20,
@@ -1857,7 +1784,9 @@ function AttackCard({ word, onClose }) {
           <div style={fade(0.15)}><Label>IMPACT</Label><Body>{word.card.impact}</Body></div>
         </div>
         <div style={{
-          ...fade(0.22), background: tokens.color.surfaceRaised, border: `1px solid ${tokens.color.border}`,
+          ...fade(0.22),
+          background: tokens.color.surfaceRaised,
+          border: `1px solid ${tokens.color.border}`,
           padding: "14px 16px", marginBottom: 24, position: "relative", overflow: "hidden",
         }}>
           <div style={{
@@ -1879,13 +1808,18 @@ function AttackCard({ word, onClose }) {
           }}>{word.card.remediation}</span>
         </div>
         <div style={fade(0.28)}>
-          <button onClick={onClose} style={{
-            width: "100%", padding: "13px 0", background: tokens.color.accent,
-            border: "none", color: tokens.color.white,
-            fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
-            letterSpacing: "-0.01em", cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
-          }}>Continue <ArrowIcon size={11} /></button>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              width: "100%", padding: "13px 0",
+              background: tokens.color.accent,
+              border: "none", color: tokens.color.white,
+              fontFamily: tokens.font.display, fontWeight: 700, fontSize: 14,
+              letterSpacing: "-0.01em", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+            }}
+          >Continue <ArrowIcon size={11} /></button>
         </div>
       </div>
     </div>
@@ -1893,7 +1827,7 @@ function AttackCard({ word, onClose }) {
 }
 
 // ============================================================================
-// COMPLETION SCREEN
+// COMPLETION
 // ============================================================================
 const FINAL_LOTTIE_URL = "/final-malwhere.json";
 const FINAL_FALLBACK_IMAGE = "/Not here.png";
@@ -1931,65 +1865,81 @@ function Completion({ onPlayAgain }) {
         const data = await res.json();
         if (cancelled || !lottieRef.current) return;
         lottieInst.current = window.lottie.loadAnimation({
-          container: lottieRef.current, renderer: "svg", loop: false, autoplay: true, animationData: data,
+          container: lottieRef.current,
+          renderer: "svg",
+          loop: false,
+          autoplay: true,
+          animationData: data,
         });
       })
-      .catch((err) => {
-        console.error("Lottie load failed:", err);
-        if (!cancelled) setFallback(true);
-      });
+      .catch(() => { if (!cancelled) setFallback(true); });
 
     return () => {
       cancelled = true;
-      if (lottieInst.current) lottieInst.current.destroy();
+      if (lottieInst.current) {
+        lottieInst.current.destroy();
+        lottieInst.current = null;
+      }
     };
   }, []);
 
   return (
-    <div style={{
-      flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 28,
-    }}>
-      <div style={{
-        textAlign: "center", maxWidth: 400,
-        animation: `cardIn 0.6s ${tokens.ease}`,
-      }}>
-        <div ref={lottieRef} style={{
-          width: "100%", maxWidth: 360, height: 100, margin: "0 auto 8px",
-          display: fallback ? "none" : "flex", alignItems: "center", justifyContent: "center",
-        }} />
-        {fallback && <img src={FINAL_FALLBACK_IMAGE} alt="Malwhere? Not here." style={{
-          width: "100%", maxWidth: 360, height: "auto", margin: "0 auto 8px", display: "block",
-        }} />}
+    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+      <div style={{ textAlign: "center", maxWidth: 400, animation: `cardIn 0.6s ${tokens.ease}` }}>
+        <div
+          ref={lottieRef}
+          aria-hidden="true"
+          style={{
+            width: "100%", maxWidth: 360, height: 100, margin: "0 auto 8px",
+            display: fallback ? "none" : "flex", alignItems: "center", justifyContent: "center",
+          }}
+        />
+        {fallback && (
+          <img
+            src={FINAL_FALLBACK_IMAGE}
+            alt="Malwhere? Not here."
+            style={{ width: "100%", maxWidth: 360, height: "auto", margin: "0 auto 8px", display: "block" }}
+          />
+        )}
         <p style={{
           fontFamily: tokens.font.body, fontWeight: 400, fontSize: 14, lineHeight: 1.6,
           color: tokens.color.textMuted, maxWidth: 480, margin: "0 auto 24px",
           letterSpacing: "-0.01em",
         }}>You traced the attack. Now see how to stop it. Chainguard secures the software supply chain with minimal, trusted, and continuously verified open source.</p>
-        <a href="https://www.chainguard.dev/" target="_blank" rel="noopener noreferrer" style={{
-          display: "inline-flex", alignItems: "center", gap: 10,
-          padding: "14px 28px", background: tokens.color.accent,
-          color: tokens.color.white, fontSize: 14, fontFamily: tokens.font.display,
-          fontWeight: 700, textDecoration: "none", letterSpacing: "-0.01em",
-          boxShadow: `0 2px 20px ${tokens.color.accentGlow}`,
-        }}>Explore Chainguard <ArrowIcon size={12} /></a>
-        <button onClick={onPlayAgain} style={{
-          display: "block", margin: "16px auto 0",
-          background: "none", border: "none", cursor: "pointer",
-          fontFamily: tokens.font.mono, fontWeight: 400, fontSize: 11,
-          letterSpacing: "0.08em", textTransform: "uppercase",
-          color: tokens.color.textMuted, padding: "8px 16px",
-        }}>Play again</button>
+        <a
+          href="https://www.chainguard.dev/"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 10,
+            padding: "14px 28px", background: tokens.color.accent,
+            color: tokens.color.white, fontSize: 14, fontFamily: tokens.font.display,
+            fontWeight: 700, textDecoration: "none", letterSpacing: "-0.01em",
+            boxShadow: `0 2px 20px ${tokens.color.accentGlow}`,
+          }}
+        >Explore Chainguard <ArrowIcon size={12} /></a>
+        <button
+          type="button"
+          onClick={onPlayAgain}
+          style={{
+            display: "block", margin: "16px auto 0",
+            background: "none", border: "none", cursor: "pointer",
+            fontFamily: tokens.font.mono, fontWeight: 400, fontSize: 11,
+            letterSpacing: "0.08em", textTransform: "uppercase",
+            color: tokens.color.textMuted, padding: "8px 16px",
+          }}
+        >Play again</button>
       </div>
     </div>
   );
 }
 
 // ============================================================================
-// GAME HEADER
+// HEADER
 // ============================================================================
 function GameHeader({ foundCount, scanAvailable, onScan, scanNudge }) {
   return (
-    <header style={{ padding: "16px 16px 0", position: "relative", zIndex: 1 }}>
+    <header style={{ padding: "16px 16px 0", position: "relative", zIndex: 1, flexShrink: 0 }}>
       <div style={{
         maxWidth: 480, margin: "0 auto",
         display: "flex", alignItems: "flex-start", justifyContent: "space-between",
@@ -1998,7 +1948,7 @@ function GameHeader({ foundCount, scanAvailable, onScan, scanNudge }) {
           <h1 style={{
             fontFamily: tokens.font.display, fontWeight: 900, fontSize: 22,
             letterSpacing: "-0.04em", color: tokens.color.white,
-            lineHeight: 1, textTransform: "uppercase",
+            lineHeight: 1, textTransform: "uppercase", margin: 0,
           }}>Malwhere?</h1>
           <div style={{
             fontFamily: tokens.font.mono, fontWeight: 400, fontSize: 9,
@@ -2006,10 +1956,8 @@ function GameHeader({ foundCount, scanAvailable, onScan, scanNudge }) {
             color: tokens.color.textFaint, marginTop: 5,
           }}>SUPPLY CHAIN ATTACKS</div>
         </div>
-        <div style={{
-          display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8,
-        }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }} aria-live="polite">
             <span style={{
               fontFamily: tokens.font.display, fontWeight: 700, fontSize: 16,
               letterSpacing: "-0.02em", color: tokens.color.white, lineHeight: 1,
@@ -2019,29 +1967,43 @@ function GameHeader({ foundCount, scanAvailable, onScan, scanNudge }) {
               color: tokens.color.textFaint, letterSpacing: "0.02em",
             }}>/ {WORDS.length} FOUND</span>
           </div>
-          <div style={{
-            width: 100, height: 2, background: tokens.color.borderSubtle,
-            borderRadius: 1, overflow: "hidden",
-          }}>
+          <div
+            style={{
+              width: 100, height: 2, background: tokens.color.borderSubtle,
+              borderRadius: 1, overflow: "hidden",
+            }}
+            role="progressbar"
+            aria-valuenow={foundCount}
+            aria-valuemin={0}
+            aria-valuemax={WORDS.length}
+          >
             <div style={{
-              width: `${(foundCount / WORDS.length) * 100}%`, height: "100%",
-              background: tokens.color.accent, borderRadius: 1,
+              width: `${(foundCount / WORDS.length) * 100}%`,
+              height: "100%",
+              background: tokens.color.accent,
+              borderRadius: 1,
               transition: "width 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
             }} />
           </div>
-          <button onClick={onScan} disabled={!scanAvailable} style={{
-            background: "none",
-            border: `1px solid ${scanAvailable ? tokens.color.border : tokens.color.borderSubtle}`,
-            padding: "5px 12px",
-            cursor: scanAvailable ? "pointer" : "default",
-            fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
-            letterSpacing: "0.1em", textTransform: "uppercase",
-            color: scanAvailable ? tokens.color.textMuted : tokens.color.textFaint,
-            opacity: scanAvailable ? 1 : 0.4,
-            transition: "opacity 0.2s ease, border-color 0.2s ease, color 0.2s ease",
-            marginTop: 2, display: "inline-flex", alignItems: "center", gap: 6,
-            animation: scanNudge && scanAvailable ? "scanNudge 2s ease-in-out infinite" : "none",
-          }}>
+          <button
+            type="button"
+            onClick={onScan}
+            disabled={!scanAvailable}
+            aria-label="Scan to reveal a word"
+            style={{
+              background: "none",
+              border: `1px solid ${scanAvailable ? tokens.color.border : tokens.color.borderSubtle}`,
+              padding: "5px 12px",
+              cursor: scanAvailable ? "pointer" : "default",
+              fontFamily: tokens.font.mono, fontSize: 9, fontWeight: 600,
+              letterSpacing: "0.1em", textTransform: "uppercase",
+              color: scanAvailable ? tokens.color.textMuted : tokens.color.textFaint,
+              opacity: scanAvailable ? 1 : 0.4,
+              transition: "opacity 0.2s ease, border-color 0.2s ease, color 0.2s ease",
+              marginTop: 2, display: "inline-flex", alignItems: "center", gap: 6,
+              animation: scanNudge && scanAvailable ? "scanNudge 2s ease-in-out infinite" : "none",
+            }}
+          >
             <SearchIcon size={10} />
             Scan
           </button>
@@ -2061,11 +2023,11 @@ const globalStyles = `
   @font-face{font-family:'Roobert SemiMono';src:url('/fonts/RoobertSemiMono-Regular.woff2') format('woff2');font-weight:400;font-display:swap}
   @font-face{font-family:'Roobert SemiMono';src:url('/fonts/RoobertSemiMono-SemiBold.woff2') format('woff2');font-weight:600;font-display:swap}
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{background:${tokens.color.bg}}
+  html,body{background:${tokens.color.bg};overscroll-behavior:none}
+  button{font:inherit;color:inherit}
+  button:focus-visible,a:focus-visible{outline:2px solid ${tokens.color.accent};outline-offset:2px}
   @keyframes fadeIn{from{opacity:0}to{opacity:1}}
-  @keyframes fadeOut{from{opacity:1}to{opacity:0}}
   @keyframes cardIn{from{opacity:0;transform:scale(0.97) translateY(4px)}to{opacity:1;transform:none}}
-  @keyframes pop{0%{transform:scale(1)}40%{transform:scale(1.12)}100%{transform:scale(1)}}
   @keyframes shake{0%,100%{transform:translateX(0)}15%{transform:translateX(-4px)}30%{transform:translateX(4px)}45%{transform:translateX(-3px)}60%{transform:translateX(2px)}}
   @keyframes lineGrow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
   @keyframes pulseOnce{0%{opacity:0.5}50%{opacity:1}100%{opacity:0.7}}
@@ -2076,15 +2038,15 @@ const globalStyles = `
   @keyframes demoCursorRipple{0%{r:10;opacity:0.9;stroke-width:3}100%{r:38;opacity:0;stroke-width:1}}
   @keyframes demoHoverPulse{0%,100%{r:16;opacity:0.25}50%{r:22;opacity:0.55}}
   @keyframes themeGlow{0%,100%{border-color:rgba(98,38,251,0.2);box-shadow:0 0 8px rgba(98,38,251,0.05)}50%{border-color:rgba(98,38,251,0.5);box-shadow:0 0 16px rgba(98,38,251,0.15)}}
-  @keyframes letterIn{from{opacity:0;transform:translateY(3px) scale(0.85)}to{opacity:1;transform:translateY(0) scale(1)}}
   @keyframes letterHop{0%{transform:translateY(0) scale(1)}30%{transform:translateY(-8px) scale(1.15)}60%{transform:translateY(0) scale(1)}80%{transform:translateY(-2px) scale(1.02)}100%{transform:translateY(0) scale(1)}}
   @keyframes notHereIn{from{opacity:0}to{opacity:1}}
-  @keyframes wordFillIn{from{opacity:0}to{opacity:1}}
-  @keyframes wordBorderIn{from{opacity:0}to{opacity:1}}
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation-duration:0.01ms !important;animation-iteration-count:1 !important;transition-duration:0.01ms !important;scroll-behavior:auto !important}
+  }
 `;
 
 // ============================================================================
-// ROOT APP — orchestrates the unified experience
+// ROOT APP
 // ============================================================================
 export default function App() {
   const [state, dispatch] = useReducer(gameReducer, initialGameState);
@@ -2093,7 +2055,6 @@ export default function App() {
   const nudgeTimerRef = useRef(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
 
-  // Phase transitions
   const handleLoadingDone = useCallback(() => {
     dispatch({ type: "SET_PHASE", phase: "onboarding" });
     setShowOnboarding(true);
@@ -2105,34 +2066,36 @@ export default function App() {
   }, []);
 
   const handleCloseCard = useCallback(() => {
-    const wasSpangram = state.activeCard?.isSpangram;
     dispatch({ type: "CLOSE_CARD" });
     if (state.phase === "reveal") {
       schedule(() => dispatch({ type: "SHOW_FINALE" }), 400);
     }
-  }, [state.activeCard, state.phase, dispatch, schedule]);
+  }, [state.phase, schedule]);
 
   const handlePlayAgain = useCallback(() => {
     clearAll();
     dispatch({ type: "RESET" });
   }, [clearAll]);
 
-  // Scan feature
-  const scanAvailable = useMemo(() => {
-    const remaining = WORDS.filter((w) => !state.foundWords.includes(w.id) && !w.isSpangram);
-    return remaining.length > 0 && !state.scanning && state.phase === "playing";
-  }, [state.foundWords, state.scanning, state.phase]);
+  const remainingScanTargets = useMemo(
+    () => WORDS.filter((w) => !state.foundWords.includes(w.id) && !w.isSpangram),
+    [state.foundWords]
+  );
+
+  const scanAvailable = remainingScanTargets.length > 0
+    && !state.scanning
+    && state.phase === "playing"
+    && !state.activeCard;
 
   const handleScan = useCallback(() => {
     if (!scanAvailable) return;
-    const candidates = WORDS.filter((w) => !state.foundWords.includes(w.id) && !w.isSpangram);
-    const target = candidates[Math.floor(Math.random() * candidates.length)];
+    const target = remainingScanTargets[Math.floor(Math.random() * remainingScanTargets.length)];
     dispatch({ type: "START_SCAN" });
 
-    // Gather empty cells for sweep
+    // Gather empty cells
     const foundSet = new Set();
     for (const id of state.foundWords) {
-      const w = WORDS.find((x) => x.id === id);
+      const w = WORDS_BY_ID[id];
       if (w) w.path.forEach(([r, c]) => foundSet.add(cellKey(r, c)));
     }
     const emptyCells = [];
@@ -2159,7 +2122,7 @@ export default function App() {
     schedule(() => dispatch({ type: "SCAN_HIGHLIGHTS", highlights: new Set() }), sweepEnd);
 
     const traceStart = sweepEnd + 150;
-    target.path.forEach((cell, idx) => {
+    target.path.forEach((_, idx) => {
       schedule(() => {
         dispatch({ type: "SCAN_TRACE", selection: target.path.slice(0, idx + 1) });
       }, traceStart + idx * 120);
@@ -2168,14 +2131,13 @@ export default function App() {
     const traceEnd = traceStart + target.path.length * 120 + 200;
     schedule(() => {
       dispatch({ type: "FLASH_WORD", flash: { path: target.path, isSpangram: target.isSpangram } });
-      const hopDuration = 550 + target.path.length * 70;
       schedule(() => {
         dispatch({ type: "COMMIT_WORD", word: target });
         dispatch({ type: "END_SCAN" });
         schedule(() => dispatch({ type: "OPEN_CARD", word: target }), 500);
-      }, hopDuration);
+      }, hopDurationFor(target.path));
     }, traceEnd);
-  }, [scanAvailable, state.foundWords, dispatch, schedule]);
+  }, [scanAvailable, remainingScanTargets, state.foundWords, schedule]);
 
   // Nudge timer
   useEffect(() => {
@@ -2188,7 +2150,6 @@ export default function App() {
     };
   }, [state.phase, state.foundWords.length, scanAvailable]);
 
-  // Status line
   const statusLine = useMemo(() => {
     if (state.scanning) return "Scanning…";
     if (state.selection.length > 0) return "Tap last letter to submit";
@@ -2200,24 +2161,25 @@ export default function App() {
     return "All attacks traced";
   }, [state.scanning, state.selection.length, state.foundWords.length]);
 
-  const gameVisible = state.phase === "playing" || state.phase === "reveal" || state.phase === "complete";
+  const gameActive = state.phase === "playing" || state.phase === "reveal";
 
   return (
     <ScheduleContext.Provider value={{ schedule, clearAll }}>
       <style>{globalStyles}</style>
       <div style={{
-        width: "100%", minHeight: "100vh",
+        width: "100%",
         minHeight: "100dvh",
         background: tokens.color.bg,
-        display: "flex", flexDirection: "column", position: "relative",
+        display: "flex", flexDirection: "column",
+        position: "relative",
       }}>
-        {/* Game layer — always rendered once reached, stays mounted through reveal/complete */}
+        {/* Game layer */}
         <div style={{
-          display: "flex", flexDirection: "column", flex: 1,
-          opacity: gameVisible && state.phase !== "complete" ? 1 : 0,
-          pointerEvents: gameVisible && state.phase !== "complete" ? "auto" : "none",
+          display: "flex", flexDirection: "column", flex: 1, minHeight: "100dvh",
+          opacity: gameActive ? 1 : 0,
+          pointerEvents: gameActive ? "auto" : "none",
           transition: "opacity 0.5s ease",
-          position: gameVisible && state.phase !== "complete" ? "relative" : "absolute",
+          position: gameActive ? "relative" : "absolute",
           inset: 0,
         }}>
           <GameHeader
@@ -2230,17 +2192,16 @@ export default function App() {
             flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
             justifyContent: "center", padding: "8px 16px 0", position: "relative", zIndex: 1,
           }}>
-            <Board
-              state={state}
-              dispatch={dispatch}
-              hoverCell={hoverCell}
-              setHoverCell={setHoverCell}
-            />
-            <div style={{
-              fontFamily: tokens.font.body, fontWeight: 400, fontSize: 11,
-              color: tokens.color.textFaint, textAlign: "center", marginTop: 6,
-              letterSpacing: "-0.01em",
-            }}>{statusLine}</div>
+            <Board state={state} dispatch={dispatch} hoverCell={hoverCell} setHoverCell={setHoverCell} />
+            <div
+              style={{
+                fontFamily: tokens.font.body, fontWeight: 400, fontSize: 11,
+                color: tokens.color.textFaint, textAlign: "center", marginTop: 6,
+                letterSpacing: "-0.01em",
+                minHeight: 16,
+              }}
+              aria-live="polite"
+            >{statusLine}</div>
             <div style={{
               maxWidth: 480, margin: "0 auto",
               display: "flex", flexWrap: "wrap", gap: 5,
@@ -2259,7 +2220,7 @@ export default function App() {
           <Footer />
         </div>
 
-        {/* Phase overlays — each fades in/out in place */}
+        {/* Loading */}
         {state.phase === "loading" && (
           <div style={{
             position: "absolute", inset: 0, background: tokens.color.bg,
@@ -2271,10 +2232,12 @@ export default function App() {
           </div>
         )}
 
+        {/* Onboarding */}
         {showOnboarding && (
           <div style={{
             position: "absolute", inset: 0,
-            background: "rgba(13,22,28,0.92)", backdropFilter: "blur(24px)",
+            background: "rgba(13,22,28,0.92)",
+            backdropFilter: "blur(24px)",
             WebkitBackdropFilter: "blur(24px)",
             display: "flex", flexDirection: "column", zIndex: 40,
             animation: "fadeIn 0.4s ease",
@@ -2284,14 +2247,15 @@ export default function App() {
           </div>
         )}
 
-        {state.activeCard && (
-          <AttackCard word={state.activeCard} onClose={handleCloseCard} />
-        )}
+        {/* Attack card */}
+        {state.activeCard && <AttackCard word={state.activeCard} onClose={handleCloseCard} />}
 
+        {/* Completion */}
         {state.phase === "complete" && !state.activeCard && (
           <div style={{
             position: "absolute", inset: 0,
-            background: "rgba(13,22,28,0.92)", backdropFilter: "blur(24px)",
+            background: "rgba(13,22,28,0.92)",
+            backdropFilter: "blur(24px)",
             WebkitBackdropFilter: "blur(24px)",
             display: "flex", flexDirection: "column", zIndex: 30,
             animation: "fadeIn 0.5s ease",
